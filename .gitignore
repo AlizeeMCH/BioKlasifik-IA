@@ -2,3 +2,7 @@
 __pycache__/
 *.py[cod]
 yolo*.pt
+node_modules/
+dist/
+.vercel/
+/*.onnx

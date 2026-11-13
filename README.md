@@ -4,6 +4,31 @@ Programa de escritorio para Windows que usa OpenCV y un modelo YOLOv8 entrenado
 para detectar residuos y etiquetarlos como **Basura Orgánica** o **Basura
 Inorgánica**. No requiere entrenar un modelo.
 
+## Aplicación web en Vercel
+
+El proyecto también incluye una versión web que usa la cámara del navegador y
+ejecuta el modelo localmente con WebGPU. Las imágenes no se envían a un servidor.
+La primera vez se descargan aproximadamente 50 MB de modelo; usa Chrome o Edge
+actualizados y permite el acceso a la cámara. En Vercel, el nombre del proyecto
+debe escribirse en minúsculas: `bioklasifik-ia`.
+
+Para probar la web localmente:
+
+```powershell
+npm install
+npm run dev
+```
+
+Para validar la compilación:
+
+```powershell
+npm run build
+```
+
+El modelo web se convirtió desde
+[kendrickfff/waste-classification-yolov8-ken](https://huggingface.co/kendrickfff/waste-classification-yolov8-ken),
+publicado bajo CC BY 4.0. Se conserva la atribución al autor en la aplicación.
+
 ## Requisito importante: Python
 
 Usa Python 3.14 de 64 bits. El entorno `.venv` de este proyecto usa Python

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Clasifica residuos orgánicos e inorgánicos con la cámara de tu dispositivo."
+    />
+    <meta name="theme-color" content="#f5f7f2" />
+    <title>BioKlasifik IA | Clasificador de residuos</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="page-header">
+        <a class="brand" href="/" aria-label="BioKlasifik IA, inicio">
+          <span class="brand-mark" aria-hidden="true">B</span>
+          <span>BIOKLASIFIK <strong>IA</strong></span>
+        </a>
+        <span class="privacy-note"><span></span> Procesamiento privado</span>
+      </header>
+
+      <section class="intro">
+        <p class="eyebrow">CLASIFICACIÓN INTELIGENTE</p>
+        <h1>Un residuo a la vez,<br /><span>un mejor planeta.</span></h1>
+        <p class="intro-copy">
+          Enfoca un objeto con tu cámara para identificar si es orgánico o
+          inorgánico.
+        </p>
+      </section>
+
+      <section class="workspace" aria-label="Clasificador de residuos">
+        <div class="camera-card">
+          <div class="camera-heading">
+            <div>
+              <p class="eyebrow">CÁMARA EN VIVO</p>
+              <h2>Analiza un objeto</h2>
+            </div>
+            <span class="live-indicator" id="liveIndicator">INACTIVA</span>
+          </div>
+
+          <div class="camera-stage" id="cameraStage">
+            <video id="camera" autoplay muted playsinline></video>
+            <canvas id="overlay" aria-hidden="true"></canvas>
+            <div class="camera-placeholder" id="cameraPlaceholder">
+              <div class="camera-icon" aria-hidden="true">◎</div>
+              <p>La vista de tu cámara aparecerá aquí</p>
+            </div>
+          </div>
+
+          <div class="camera-controls">
+            <button class="primary-button" id="cameraButton" type="button">
+              Activar cámara
+            </button>
+            <label class="confidence-control" for="confidence">
+              <span>Confianza mínima</span>
+              <strong id="confidenceValue">35%</strong>
+              <input id="confidence" type="range" min="20" max="80" value="35" />
+            </label>
+          </div>
+          <p class="status-message" id="statusMessage" role="status" aria-live="polite">
+            El modelo se ejecuta en este navegador; las imágenes no se cargan a la nube.
+          </p>
+        </div>
+
+        <aside class="results-card" aria-live="polite">
+          <p class="eyebrow">RESULTADOS</p>
+          <h2>Detección</h2>
+          <div class="result-empty" id="resultEmpty">
+            <span aria-hidden="true">✳</span>
+            <p>Enfoca un residuo para ver su clasificación.</p>
+          </div>
+          <ul class="result-list" id="resultList"></ul>
+          <div class="legend">
+            <span><i class="organic-dot"></i> Orgánico</span>
+            <span><i class="inorganic-dot"></i> Inorgánico</span>
+          </div>
+          <p class="model-credit">
+            Modelo:
+            <a
+              href="https://huggingface.co/kendrickfff/waste-classification-yolov8-ken"
+              target="_blank"
+              rel="noreferrer"
+            >Kendrick's Waste Classification</a>
+            · CC BY 4.0
+          </p>
+        </aside>
+      </section>
+
+      <footer>
+        <span>BioKlasifik IA</span>
+        <span>La clasificación es una sugerencia; verifica las normas locales de reciclaje.</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
