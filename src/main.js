@@ -47,6 +47,7 @@ let session;
 let cameraStream;
 let running = false;
 let timer;
+let inferenceProvider = "wasm";
 
 confidenceInput.addEventListener("input", () => {
   confidenceValue.textContent = `${confidenceInput.value}%`;
@@ -61,25 +62,47 @@ cameraButton.addEventListener("click", async () => {
 });
 
 async function loadModel() {
-  if (!navigator.gpu) {
-    throw new Error(
-      "Este navegador no tiene WebGPU disponible. Abre la página en Chrome o Edge actualizados."
-    );
+  statusMessage.textContent =
+    "Preparando el modelo; la primera vez se descargará en este dispositivo.";
+  let gpuError;
+
+  if (navigator.gpu) {
+    try {
+      session = await ort.InferenceSession.create(MODEL_URL, {
+        executionProviders: ["webgpu"],
+        graphOptimizationLevel: "all",
+      });
+      inferenceProvider = "webgpu";
+      return;
+    } catch (error) {
+      gpuError = error;
+      statusMessage.textContent =
+        "La aceleración gráfica no está disponible; preparando el modo compatible.";
+    }
   }
 
-  statusMessage.textContent = "Preparando el modelo de detección…";
-  session = await ort.InferenceSession.create(MODEL_URL, {
-    executionProviders: ["webgpu"],
-    graphOptimizationLevel: "all",
-  });
+  try {
+    session = await ort.InferenceSession.create(MODEL_URL, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all",
+    });
+    inferenceProvider = "wasm";
+  } catch (error) {
+    const gpuMessage = gpuError?.message || "WebGPU no disponible";
+    throw new Error(
+      `No se pudo cargar el modelo. GPU: ${gpuMessage}. Procesador: ${error.message}`
+    );
+  }
 }
 
 async function startCamera() {
   cameraButton.disabled = true;
   statusMessage.classList.remove("error");
   try {
-    if (!session) {
-      await loadModel();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error(
+        "No se puede acceder a la cámara. Abre esta aplicación con HTTPS en un navegador actualizado."
+      );
     }
     cameraStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -87,6 +110,11 @@ async function startCamera() {
     });
     video.srcObject = cameraStream;
     await video.play();
+
+    if (!session) {
+      await loadModel();
+    }
+
     running = true;
     cameraButton.textContent = "Detener cámara";
     cameraButton.classList.add("stop-button");
@@ -94,15 +122,31 @@ async function startCamera() {
     placeholder.hidden = true;
     liveIndicator.textContent = "EN VIVO";
     liveIndicator.classList.add("active");
-    statusMessage.textContent = "Cámara activa. Mantén un objeto centrado en el encuadre.";
+    statusMessage.textContent =
+      inferenceProvider === "wasm"
+        ? "Cámara activa. El análisis se ejecutará en el procesador de este dispositivo."
+        : "Cámara activa. Mantén un objeto centrado en el encuadre.";
     resizeOverlay();
     await processFrame();
   } catch (error) {
     stopCamera();
-    statusMessage.textContent = error.message || "No se pudo iniciar el clasificador.";
+    statusMessage.textContent = getStartupErrorMessage(error);
     statusMessage.classList.add("error");
     cameraButton.disabled = false;
   }
+}
+
+function getStartupErrorMessage(error) {
+  if (error.name === "NotAllowedError" || error.name === "SecurityError") {
+    return "No se autorizó el acceso a la cámara. Permite el acceso en los ajustes del navegador y vuelve a intentarlo.";
+  }
+  if (error.name === "NotFoundError" || error.name === "OverconstrainedError") {
+    return "No se encontró una cámara compatible en este dispositivo.";
+  }
+  if (error.name === "NotReadableError" || error.name === "AbortError") {
+    return "No se pudo iniciar la cámara. Cierra otras aplicaciones que la estén usando y vuelve a intentarlo.";
+  }
+  return error.message || "No se pudo iniciar el clasificador.";
 }
 
 function stopCamera() {
@@ -135,7 +179,10 @@ async function processFrame() {
     const detections = decodeDetections(output.data, scale, padX, padY);
     drawDetections(detections);
     renderResults(detections);
-    statusMessage.textContent = "Análisis local activo; las imágenes no salen de tu dispositivo.";
+    statusMessage.textContent =
+      inferenceProvider === "wasm"
+        ? "Análisis local activo en el procesador; las imágenes no salen de tu dispositivo."
+        : "Análisis local activo; las imágenes no salen de tu dispositivo.";
   } catch (error) {
     statusMessage.textContent = error.message || "Ocurrió un error durante el análisis.";
     statusMessage.classList.add("error");

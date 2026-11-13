@@ -431,6 +431,7 @@ h2 {
 
 footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 16px;
   padding: 22px 0 28px;
@@ -441,6 +442,11 @@ footer {
 footer span:first-child {
   color: #526056;
   font-weight: 700;
+}
+
+.team-members {
+  flex-basis: 100%;
+  text-align: center;
 }
 
 [hidden] {
@@ -488,6 +494,11 @@ footer span:first-child {
   }
 
   footer {
+    align-items: flex-start;
     flex-direction: column;
+  }
+
+  .team-members {
+    text-align: left;
   }
 }

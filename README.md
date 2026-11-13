@@ -7,9 +7,11 @@ Inorgánica**. No requiere entrenar un modelo.
 ## Aplicación web en Vercel
 
 El proyecto también incluye una versión web que usa la cámara del navegador y
-ejecuta el modelo localmente con WebGPU. Las imágenes no se envían a un servidor.
-La primera vez se descargan aproximadamente 50 MB de modelo; usa Chrome o Edge
-actualizados y permite el acceso a la cámara. En Vercel, el nombre del proyecto
+ejecuta el modelo localmente con WebGPU cuando está disponible y usa WebAssembly
+en el procesador como alternativa. Así también puede funcionar en Safari para
+iPhone y en teléfonos Android sin aceleración gráfica compatible. Las imágenes
+no se envían a un servidor. La primera vez se descargan aproximadamente 50 MB
+de modelo; permite el acceso a la cámara. En Vercel, el nombre del proyecto
 debe escribirse en minúsculas: `bioklasifik-ia`.
 
 Para probar la web localmente:
