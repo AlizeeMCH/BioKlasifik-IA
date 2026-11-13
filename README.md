@@ -1,6 +1,5 @@
 # Clasificador de residuos con cámara web
-
-Programa de escritorio para Windows que usa OpenCV y un modelo YOLOv8 entrenado
+Programa de escritorio para Windows y SmartPhones que usa OpenCV y un modelo YOLOv8 entrenado
 para detectar residuos y etiquetarlos como **Basura Orgánica** o **Basura
 Inorgánica**. No requiere entrenar un modelo.
 
@@ -15,6 +14,12 @@ inferencias no se acumulan si el teléfono tarda más de 225 ms. Las imágenes n
 se envían a un servidor. La primera vez se descargan aproximadamente 50 MB de
 modelo; permite el acceso a la cámara. En Vercel, el nombre del proyecto debe
 escribirse en minúsculas: `bioklasifik-ia`.
+
+La etiqueta se suaviza con un historial de seis inferencias: espera tres votos
+para mostrar una categoría inicial y requiere cuatro para cambiarla. El
+historial se reinicia al cambiar de objeto o tras tres fotogramas sin detección.
+Esto reduce el parpadeo, pero no corrige una predicción errónea y puede tardar
+varios fotogramas en reflejar un cambio.
 
 Para probar la web localmente:
 
@@ -35,6 +40,10 @@ publicado bajo CC BY 4.0. La clase `biological` se clasifica como **Basura
 Orgánica**; las clases restantes del modelo son **Basura Inorgánica**. El
 modelo no tiene clases separadas para cada fruta o vegetal, así que los
 resultados dependen de lo que el detector reconozca como material biológico.
+Por ello, un alimento que el modelo prediga como vidrio, plástico u otra clase
+inorgánica seguirá apareciendo como inorgánico; corregir ese sesgo requiere
+reentrenar o sustituir el modelo con ejemplos orgánicos representativos, no
+una regla de color que también confundiría vidrio o envases.
 Se conserva la atribución al autor en la aplicación.
 
 ## Requisito importante: Python

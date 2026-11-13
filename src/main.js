@@ -1,4 +1,5 @@
 import * as ort from "onnxruntime-web/webgpu";
+import { createDetectionStabilizer } from "./detection-stabilizer.js";
 import "./style.css";
 
 const INPUT_SIZE = 320;
@@ -60,6 +61,7 @@ const inputCanvas = document.createElement("canvas");
 inputCanvas.width = INPUT_SIZE;
 inputCanvas.height = INPUT_SIZE;
 const inputContext = inputCanvas.getContext("2d", { willReadFrequently: true });
+const detectionStabilizer = createDetectionStabilizer();
 
 let session;
 let cameraStream;
@@ -147,6 +149,7 @@ async function startCamera() {
         ? "Cámara activa. El análisis se ejecutará en el procesador de este dispositivo."
         : "Cámara activa. Mantén un objeto centrado en el encuadre.";
     resizeOverlay();
+    detectionStabilizer.reset();
     lastInferenceAt = 0;
     animationFrameId = requestAnimationFrame(processFrame);
   } catch (error) {
@@ -172,6 +175,7 @@ function getStartupErrorMessage(error) {
 
 function stopCamera() {
   running = false;
+  detectionStabilizer.reset();
   if (animationFrameId !== undefined) {
     cancelAnimationFrame(animationFrameId);
     animationFrameId = undefined;
@@ -213,10 +217,12 @@ async function inferFrame() {
     const { scale, padX, padY } = prepareInput();
     const input = new ort.Tensor("float32", inputPixels(), [1, 3, INPUT_SIZE, INPUT_SIZE]);
     const output = await session.run({ images: input });
-    const detections = decodeDetections(output.output0, scale, padX, padY);
     if (!running) {
       return;
     }
+    const detections = detectionStabilizer.stabilize(
+      decodeDetections(output.output0, scale, padX, padY)
+    );
     drawDetections(detections);
     renderResults(detections);
     statusMessage.textContent =
@@ -317,6 +323,8 @@ function decodeDetections(data, scale, padX, padY) {
     candidates.push({
       category,
       score,
+      centerX: boxCenterX,
+      centerY: boxCenterY,
       centerDistance: Math.hypot(offsetX, offsetY),
       x1,
       y1,
@@ -378,8 +386,18 @@ function drawDetections(detections) {
     const color = CATEGORY_COLORS[detection.category];
     const label = `${detection.category} · ${Math.round(detection.score * 100)}%`;
     const labelHeight = Math.max(24, overlay.width / 25);
-    const labelWidth = overlayContext.measureText(label).width + 16;
-    const labelTop = Math.max(0, detection.y1 - labelHeight);
+    const labelWidth = Math.min(
+      overlay.width,
+      overlayContext.measureText(label).width + 16
+    );
+    const labelX = Math.min(
+      Math.max(0, detection.x1),
+      overlay.width - labelWidth
+    );
+    const labelTop =
+      detection.y1 >= labelHeight
+        ? detection.y1 - labelHeight
+        : detection.y1 + overlayContext.lineWidth;
     overlayContext.strokeStyle = color;
     overlayContext.fillStyle = color;
     overlayContext.strokeRect(
@@ -389,9 +407,9 @@ function drawDetections(detections) {
       detection.y2 - detection.y1
     );
     overlayContext.fillStyle = color;
-    overlayContext.fillRect(detection.x1, labelTop, labelWidth, labelHeight);
+    overlayContext.fillRect(labelX, labelTop, labelWidth, labelHeight);
     overlayContext.fillStyle = "#ffffff";
-    overlayContext.fillText(label, detection.x1 + 8, labelTop + labelHeight * 0.68);
+    overlayContext.fillText(label, labelX + 8, labelTop + labelHeight * 0.68);
   }
 }
 
