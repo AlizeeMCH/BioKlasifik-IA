@@ -1,49 +1,17 @@
-import * as ort from "onnxruntime-web/webgpu";
 import { createDetectionStabilizer } from "./detection-stabilizer.js";
+import {
+  classifyLabel,
+  classifyWastePredictions,
+  estimateOrganicColorEvidence,
+} from "./vision-classifier.js";
 import "./style.css";
 
-const INPUT_SIZE = 320;
-const INFERENCE_INTERVAL_MS = 225;
+const MAX_ROI_SIZE = 320;
+const INFERENCE_INTERVAL_MS = 350;
 const CENTER_REGION_LIMIT = 0.72;
-const MODEL_URL = "/models/waste-yolov8n-12cls-320-fp16.onnx";
-const CLASS_NAMES = [
-  "battery",
-  "biological",
-  "brown-glass",
-  "cardboard",
-  "clothes",
-  "green-glass",
-  "metal",
-  "paper",
-  "plastic",
-  "shoes",
-  "trash",
-  "white-glass",
-];
-const ORGANIC_CLASSES = new Set([
-  "biological",
-  "food",
-  "food scraps",
-  "food waste",
-  "fruit",
-  "fruits",
-  "organic",
-  "organic waste",
-  "peel",
-  "plant",
-  "plants",
-  "vegetable",
-  "vegetables",
-]);
 const CATEGORY_COLORS = {
   "Basura Orgánica": "#10b981",
   "Basura Inorgánica": "#3b82f6",
-};
-const CLASS_THRESHOLDS = {
-  clothes: 0.65,
-  "brown-glass": 0.55,
-  "green-glass": 0.55,
-  "white-glass": 0.55,
 };
 
 const video = document.querySelector("#camera");
@@ -57,19 +25,20 @@ const liveIndicator = document.querySelector("#liveIndicator");
 const resultList = document.querySelector("#resultList");
 const resultEmpty = document.querySelector("#resultEmpty");
 const overlayContext = overlay.getContext("2d");
-const inputCanvas = document.createElement("canvas");
-inputCanvas.width = INPUT_SIZE;
-inputCanvas.height = INPUT_SIZE;
-const inputContext = inputCanvas.getContext("2d", { willReadFrequently: true });
+const frameCanvas = document.createElement("canvas");
+const frameContext = frameCanvas.getContext("2d");
+const roiCanvas = document.createElement("canvas");
+const roiContext = roiCanvas.getContext("2d", { willReadFrequently: true });
 const detectionStabilizer = createDetectionStabilizer();
 
-let session;
+let tf;
+let objectDetector;
+let mobileNet;
 let cameraStream;
 let running = false;
 let animationFrameId;
 let lastInferenceAt = 0;
 let isProcessing = false;
-let inferenceProvider = "wasm";
 
 confidenceInput.addEventListener("input", () => {
   confidenceValue.textContent = `${confidenceInput.value}%`;
@@ -83,37 +52,33 @@ cameraButton.addEventListener("click", async () => {
   await startCamera();
 });
 
-async function loadModel() {
-  statusMessage.textContent =
-    "Preparando el modelo; la primera vez se descargará en este dispositivo.";
-  let gpuError;
-
-  if (navigator.gpu) {
-    try {
-      session = await ort.InferenceSession.create(MODEL_URL, {
-        executionProviders: ["webgpu"],
-        graphOptimizationLevel: "all",
-      });
-      inferenceProvider = "webgpu";
-      return;
-    } catch (error) {
-      gpuError = error;
-      statusMessage.textContent =
-        "La aceleración gráfica no está disponible; preparando el modo compatible.";
+async function loadModels() {
+  statusMessage.textContent = "Preparando TensorFlow.js y los modelos visuales.";
+  const [tensorflow, cocoSsd, mobilenet] = await Promise.all([
+    import("@tensorflow/tfjs"),
+    import("@tensorflow-models/coco-ssd"),
+    import("@tensorflow-models/mobilenet"),
+  ]);
+  tf = tensorflow;
+  try {
+    if (!(await tf.setBackend("webgl"))) {
+      throw new Error("WebGL no está disponible.");
+    }
+  } catch (error) {
+    if (!(await tf.setBackend("cpu"))) {
+      throw new Error(`No se pudo iniciar TensorFlow.js: ${error.message}`);
     }
   }
-
+  await tf.ready();
+  statusMessage.textContent =
+    "Descargando COCO-SSD y MobileNetV2; la primera carga puede tardar.";
+  objectDetector = await cocoSsd.load({ base: "lite_mobilenet_v2" });
   try {
-    session = await ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ["wasm"],
-      graphOptimizationLevel: "all",
-    });
-    inferenceProvider = "wasm";
+    mobileNet = await mobilenet.load({ version: 2, alpha: 1.0 });
   } catch (error) {
-    const gpuMessage = gpuError?.message || "WebGPU no disponible";
-    throw new Error(
-      `No se pudo cargar el modelo. GPU: ${gpuMessage}. Procesador: ${error.message}`
-    );
+    objectDetector.dispose();
+    objectDetector = undefined;
+    throw new Error(`No se pudo cargar MobileNetV2: ${error.message}`);
   }
 }
 
@@ -128,13 +93,17 @@ async function startCamera() {
     }
     cameraStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 640 } },
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 640, max: 960 },
+        height: { ideal: 480, max: 720 },
+      },
     });
     video.srcObject = cameraStream;
     await video.play();
 
-    if (!session) {
-      await loadModel();
+    if (!objectDetector || !mobileNet) {
+      await loadModels();
     }
 
     running = true;
@@ -145,9 +114,7 @@ async function startCamera() {
     liveIndicator.textContent = "EN VIVO";
     liveIndicator.classList.add("active");
     statusMessage.textContent =
-      inferenceProvider === "wasm"
-        ? "Cámara activa. El análisis se ejecutará en el procesador de este dispositivo."
-        : "Cámara activa. Mantén un objeto centrado en el encuadre.";
+      "Cámara activa. Mantén un objeto centrado en el encuadre.";
     resizeOverlay();
     detectionStabilizer.reset();
     lastInferenceAt = 0;
@@ -214,21 +181,50 @@ function processFrame(timestamp) {
 
 async function inferFrame() {
   try {
-    const { scale, padX, padY } = prepareInput();
-    const input = new ort.Tensor("float32", inputPixels(), [1, 3, INPUT_SIZE, INPUT_SIZE]);
-    const output = await session.run({ images: input });
+    captureCurrentFrame();
+    const objects = await objectDetector.detect(frameCanvas, 10, 0.15);
+    if (!running) {
+      return;
+    }
+    const selectedObject = selectPrimaryObject(objects);
+    const roi = cropObject(selectedObject);
+    const mobilePredictions = await mobileNet.classify(roiCanvas, 5);
+    if (!running) {
+      return;
+    }
+    const confidenceThreshold = Number(confidenceInput.value) / 100;
+    const colorEvidence = estimateOrganicColorEvidence(
+      roiContext.getImageData(0, 0, roiCanvas.width, roiCanvas.height)
+    );
+    const classification = classifyWastePredictions(
+      mobilePredictions,
+      selectedObject,
+      colorEvidence,
+      confidenceThreshold
+    );
     if (!running) {
       return;
     }
     const detections = detectionStabilizer.stabilize(
-      decodeDetections(output.output0, scale, padX, padY)
+      classification
+        ? [
+            {
+              ...classification,
+              ...roi,
+              centerX: (roi.x1 + roi.x2) / 2 / video.videoWidth,
+              centerY: (roi.y1 + roi.y2) / 2 / video.videoHeight,
+              centerDistance: Math.hypot(
+                ((roi.x1 + roi.x2) / 2 / video.videoWidth - 0.5) * 2,
+                ((roi.y1 + roi.y2) / 2 / video.videoHeight - 0.5) * 2
+              ),
+            },
+          ]
+        : []
     );
     drawDetections(detections);
     renderResults(detections);
     statusMessage.textContent =
-      inferenceProvider === "wasm"
-        ? "Análisis local activo en el procesador; las imágenes no salen de tu dispositivo."
-        : "Análisis local activo; las imágenes no salen de tu dispositivo.";
+      "Análisis local activo; las imágenes no salen de tu dispositivo.";
   } catch (error) {
     statusMessage.textContent = error.message || "Ocurrió un error durante el análisis.";
     statusMessage.classList.add("error");
@@ -238,141 +234,75 @@ async function inferFrame() {
   }
 }
 
-function prepareInput() {
+function captureCurrentFrame() {
+  if (
+    frameCanvas.width !== video.videoWidth ||
+    frameCanvas.height !== video.videoHeight
+  ) {
+    frameCanvas.width = video.videoWidth;
+    frameCanvas.height = video.videoHeight;
+  }
+  frameContext.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
+}
+
+function selectPrimaryObject(predictions) {
   const width = video.videoWidth;
   const height = video.videoHeight;
-  const scale = Math.min(INPUT_SIZE / width, INPUT_SIZE / height);
-  const resizedWidth = Math.round(width * scale);
-  const resizedHeight = Math.round(height * scale);
-  const padX = Math.floor((INPUT_SIZE - resizedWidth) / 2);
-  const padY = Math.floor((INPUT_SIZE - resizedHeight) / 2);
-
-  inputContext.fillStyle = "rgb(114, 114, 114)";
-  inputContext.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
-  inputContext.drawImage(video, padX, padY, resizedWidth, resizedHeight);
-  return { scale, padX, padY };
-}
-
-function inputPixels() {
-  const { data } = inputContext.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
-  const pixels = new Float32Array(3 * INPUT_SIZE * INPUT_SIZE);
-  const planeSize = INPUT_SIZE * INPUT_SIZE;
-  for (let pixel = 0; pixel < planeSize; pixel += 1) {
-    const source = pixel * 4;
-    pixels[pixel] = data[source] / 255;
-    pixels[planeSize + pixel] = data[source + 1] / 255;
-    pixels[planeSize * 2 + pixel] = data[source + 2] / 255;
-  }
-  return pixels;
-}
-
-function decodeDetections(data, scale, padX, padY) {
-  const outputData = data.data;
-  const classCount = data.dims[1] - 4;
-  const detectionCount = data.dims[2];
-  if (classCount !== CLASS_NAMES.length) {
-    throw new Error("La salida del modelo no coincide con sus clases de residuos.");
-  }
-
-  const candidates = [];
-  const minimumConfidence = Math.min(Number(confidenceInput.value), 75) / 100;
-
-  for (let index = 0; index < detectionCount; index += 1) {
-    let classId = 0;
-    let score = 0;
-    for (let classIndex = 0; classIndex < classCount; classIndex += 1) {
-      const classScore = outputData[(classIndex + 4) * detectionCount + index];
-      if (classScore > score) {
-        score = classScore;
-        classId = classIndex;
-      }
-    }
-    const name = CLASS_NAMES[classId];
-    const category = classifyCategory(name);
-    if (score < Math.max(minimumConfidence, CLASS_THRESHOLDS[name] || 0)) {
-      continue;
-    }
-
-    const centerX = outputData[index];
-    const centerY = outputData[detectionCount + index];
-    const width = outputData[2 * detectionCount + index];
-    const height = outputData[3 * detectionCount + index];
-    const left = Math.max(0, centerX - width / 2);
-    const top = Math.max(0, centerY - height / 2);
-    const right = Math.min(INPUT_SIZE, centerX + width / 2);
-    const bottom = Math.min(INPUT_SIZE, centerY + height / 2);
-    const x1 = Math.max(0, (left - padX) / scale);
-    const y1 = Math.max(0, (top - padY) / scale);
-    const x2 = Math.min(video.videoWidth, (right - padX) / scale);
-    const y2 = Math.min(video.videoHeight, (bottom - padY) / scale);
-    const area = (x2 - x1) * (y2 - y1);
-    if (area <= 0 || area / (video.videoWidth * video.videoHeight) > 0.75) {
-      continue;
-    }
-    const boxCenterX = (x1 + x2) / 2 / video.videoWidth;
-    const boxCenterY = (y1 + y2) / 2 / video.videoHeight;
-    const offsetX = (boxCenterX - 0.5) * 2;
-    const offsetY = (boxCenterY - 0.5) * 2;
-    if (
-      Math.abs(offsetX) > CENTER_REGION_LIMIT ||
-      Math.abs(offsetY) > CENTER_REGION_LIMIT
-    ) {
-      continue;
-    }
-
-    candidates.push({
-      category,
-      score,
-      centerX: boxCenterX,
-      centerY: boxCenterY,
-      centerDistance: Math.hypot(offsetX, offsetY),
-      x1,
-      y1,
-      x2,
-      y2,
-    });
-  }
-
-  return nonMaximumSuppression(candidates)
+  return predictions
+    .filter((prediction) => prediction.class !== "person")
+    .map((prediction) => {
+      const [x, y, boxWidth, boxHeight] = prediction.bbox;
+      const centerX = (x + boxWidth / 2) / width;
+      const centerY = (y + boxHeight / 2) / height;
+      return {
+        ...prediction,
+        centerDistance: Math.hypot((centerX - 0.5) * 2, (centerY - 0.5) * 2),
+      };
+    })
+    .filter((prediction) => prediction.centerDistance <= CENTER_REGION_LIMIT)
     .sort(
       (first, second) =>
-        first.centerDistance - second.centerDistance || second.score - first.score
-    )
-    .slice(0, 1);
+        first.centerDistance - second.centerDistance ||
+        second.score - first.score
+    )[0];
 }
 
-function classifyCategory(className) {
-  const normalizedName = className.toLowerCase().replace(/[-_]+/g, " ");
-  return ORGANIC_CLASSES.has(normalizedName)
-    ? "Basura Orgánica"
-    : "Basura Inorgánica";
-}
-
-function nonMaximumSuppression(candidates) {
-  candidates.sort((first, second) => second.score - first.score);
-  const selected = [];
-  for (const candidate of candidates.slice(0, 300)) {
-    if (selected.every((item) => intersectionOverUnion(item, candidate) <= 0.45)) {
-      selected.push(candidate);
-    }
+function cropObject(detection) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  let [x, y, boxWidth, boxHeight] = detection?.bbox || [];
+  if (!detection) {
+    const side = Math.min(width, height) * 0.72;
+    x = (width - side) / 2;
+    y = (height - side) / 2;
+    boxWidth = side;
+    boxHeight = side;
   }
-  return selected;
-}
 
-function intersectionOverUnion(first, second) {
-  const intersectionWidth = Math.max(
+  const paddingX = boxWidth * 0.08;
+  const paddingY = boxHeight * 0.08;
+  const left = Math.max(0, x - paddingX);
+  const top = Math.max(0, y - paddingY);
+  const right = Math.min(width, x + boxWidth + paddingX);
+  const bottom = Math.min(height, y + boxHeight + paddingY);
+  const cropWidth = Math.max(1, right - left);
+  const cropHeight = Math.max(1, bottom - top);
+  const scale = Math.min(1, MAX_ROI_SIZE / Math.max(cropWidth, cropHeight));
+  roiCanvas.width = Math.max(1, Math.round(cropWidth * scale));
+  roiCanvas.height = Math.max(1, Math.round(cropHeight * scale));
+  roiContext.drawImage(
+    frameCanvas,
+    left,
+    top,
+    cropWidth,
+    cropHeight,
     0,
-    Math.min(first.x2, second.x2) - Math.max(first.x1, second.x1)
-  );
-  const intersectionHeight = Math.max(
     0,
-    Math.min(first.y2, second.y2) - Math.max(first.y1, second.y1)
+    roiCanvas.width,
+    roiCanvas.height
   );
-  const intersection = intersectionWidth * intersectionHeight;
-  const firstArea = (first.x2 - first.x1) * (first.y2 - first.y1);
-  const secondArea = (second.x2 - second.x1) * (second.y2 - second.y1);
-  const union = firstArea + secondArea - intersection;
-  return union > 0 ? intersection / union : 0;
+
+  return { x1: left, y1: top, x2: right, y2: bottom };
 }
 
 function drawDetections(detections) {
@@ -395,9 +325,9 @@ function drawDetections(detections) {
       overlay.width - labelWidth
     );
     const labelTop =
-      detection.y1 >= labelHeight
-        ? detection.y1 - labelHeight
-        : detection.y1 + overlayContext.lineWidth;
+      detection.y1 < 32
+        ? detection.y1 + overlayContext.lineWidth
+        : detection.y1 - labelHeight;
     overlayContext.strokeStyle = color;
     overlayContext.fillStyle = color;
     overlayContext.strokeRect(

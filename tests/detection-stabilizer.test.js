@@ -49,13 +49,13 @@ test("waits for repeated evidence before showing an initial category", () => {
   );
 });
 
-test("switches after four of six frames consistently support the other category", () => {
+test("switches after three of four frames support the other category", () => {
   const stabilizer = createDetectionStabilizer();
   for (let frame = 0; frame < 3; frame += 1) {
     stabilizer.stabilize([detection("Basura Orgánica")]);
   }
 
-  for (let frame = 0; frame < 3; frame += 1) {
+  for (let frame = 0; frame < 2; frame += 1) {
     assert.equal(
       stabilizer.stabilize([detection("Basura Inorgánica")])[0].category,
       "Basura Orgánica"

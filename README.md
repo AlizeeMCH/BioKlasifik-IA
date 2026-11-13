@@ -6,20 +6,19 @@ Inorgánica**. No requiere entrenar un modelo.
 ## Aplicación web en Vercel
 
 El proyecto también incluye una versión web que usa la cámara del navegador y
-ejecuta el modelo localmente con WebGPU cuando está disponible y usa WebAssembly
-en el procesador como alternativa. Así también puede funcionar en Safari para
-iPhone y en teléfonos Android sin aceleración gráfica compatible. El modelo
-web usa entradas de 320 × 320 píxeles y prioriza un objeto centrado; las
-inferencias no se acumulan si el teléfono tarda más de 225 ms. Las imágenes no
-se envían a un servidor. La primera vez se descargan aproximadamente 50 MB de
-modelo; permite el acceso a la cámara. En Vercel, el nombre del proyecto debe
-escribirse en minúsculas: `bioklasifik-ia`.
+combina COCO-SSD para localizar el objeto y MobileNetV2 (alpha 1.0, ImageNet)
+para clasificar su recorte. TensorFlow.js usa WebGL cuando está disponible y
+CPU como alternativa. El análisis se limita al objeto más cercano al centro y
+se estabiliza con las últimas cuatro predicciones. Los pesos se descargan al
+navegador la primera vez; las imágenes de la cámara no se envían a un servidor.
+En Vercel, el nombre del proyecto debe escribirse en minúsculas:
+`bioklasifik-ia`.
 
-La etiqueta se suaviza con un historial de seis inferencias: espera tres votos
-para mostrar una categoría inicial y requiere cuatro para cambiarla. El
-historial se reinicia al cambiar de objeto o tras tres fotogramas sin detección.
-Esto reduce el parpadeo, pero no corrige una predicción errónea y puede tardar
-varios fotogramas en reflejar un cambio.
+Una detección orgánica semántica con evidencia combinada de al menos 15% tiene
+prioridad; si MobileNet no reconoce el objeto, un respaldo conservador analiza
+los colores naturales del recorte e ignora reflejos claros. La estabilización
+espera tres votos para mostrar o cambiar la categoría y se reinicia al cambiar
+de objeto o tras tres fotogramas sin detección.
 
 Para probar la web localmente:
 
@@ -34,17 +33,11 @@ Para validar la compilación:
 npm run build
 ```
 
-El modelo web se convirtió desde
-[kendrickfff/waste-classification-yolov8-ken](https://huggingface.co/kendrickfff/waste-classification-yolov8-ken),
-publicado bajo CC BY 4.0. La clase `biological` se clasifica como **Basura
-Orgánica**; las clases restantes del modelo son **Basura Inorgánica**. El
-modelo no tiene clases separadas para cada fruta o vegetal, así que los
-resultados dependen de lo que el detector reconozca como material biológico.
-Por ello, un alimento que el modelo prediga como vidrio, plástico u otra clase
-inorgánica seguirá apareciendo como inorgánico; corregir ese sesgo requiere
-reentrenar o sustituir el modelo con ejemplos orgánicos representativos, no
-una regla de color que también confundiría vidrio o envases.
-Se conserva la atribución al autor en la aplicación.
+La versión web usa COCO-SSD y MobileNetV2 de
+[TensorFlow.js](https://github.com/tensorflow/tfjs-models), cuyos modelos se
+entrenaron con COCO e ImageNet respectivamente. Ambos son clasificadores
+genéricos, no un modelo de reciclaje; la inferencia puede equivocarse y la
+regla de color solo se aplica cuando no hay evidencia semántica clara.
 
 ## Requisito importante: Python
 
