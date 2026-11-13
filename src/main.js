@@ -1,24 +1,43 @@
 import * as ort from "onnxruntime-web/webgpu";
 import "./style.css";
 
-const INPUT_SIZE = 640;
-const CLASS_COUNT = 12;
-const DETECTION_COUNT = 8400;
-const MODEL_URL = "/models/waste-yolov8n-12cls-fp16.onnx";
-const CLASSIFICATIONS = [
-  ["battery", "Batería", "Basura Inorgánica"],
-  ["biological", "Orgánico", "Basura Orgánica"],
-  ["brown-glass", "Vidrio marrón", "Basura Inorgánica"],
-  ["cardboard", "Cartón", "Basura Inorgánica"],
-  ["clothes", "Residuo Inorgánico", "Basura Inorgánica"],
-  ["green-glass", "Vidrio verde", "Basura Inorgánica"],
-  ["metal", "Metal", "Basura Inorgánica"],
-  ["paper", "Papel", "Basura Inorgánica"],
-  ["plastic", "Plástico", "Basura Inorgánica"],
-  ["shoes", "Calzado", "Basura Inorgánica"],
-  ["trash", "Residuo mixto", "Basura Inorgánica"],
-  ["white-glass", "Vidrio transparente", "Basura Inorgánica"],
+const INPUT_SIZE = 320;
+const INFERENCE_INTERVAL_MS = 225;
+const CENTER_REGION_LIMIT = 0.72;
+const MODEL_URL = "/models/waste-yolov8n-12cls-320-fp16.onnx";
+const CLASS_NAMES = [
+  "battery",
+  "biological",
+  "brown-glass",
+  "cardboard",
+  "clothes",
+  "green-glass",
+  "metal",
+  "paper",
+  "plastic",
+  "shoes",
+  "trash",
+  "white-glass",
 ];
+const ORGANIC_CLASSES = new Set([
+  "biological",
+  "food",
+  "food scraps",
+  "food waste",
+  "fruit",
+  "fruits",
+  "organic",
+  "organic waste",
+  "peel",
+  "plant",
+  "plants",
+  "vegetable",
+  "vegetables",
+]);
+const CATEGORY_COLORS = {
+  "Basura Orgánica": "#10b981",
+  "Basura Inorgánica": "#3b82f6",
+};
 const CLASS_THRESHOLDS = {
   clothes: 0.65,
   "brown-glass": 0.55,
@@ -28,7 +47,6 @@ const CLASS_THRESHOLDS = {
 
 const video = document.querySelector("#camera");
 const overlay = document.querySelector("#overlay");
-const stage = document.querySelector("#cameraStage");
 const placeholder = document.querySelector("#cameraPlaceholder");
 const cameraButton = document.querySelector("#cameraButton");
 const confidenceInput = document.querySelector("#confidence");
@@ -46,7 +64,9 @@ const inputContext = inputCanvas.getContext("2d", { willReadFrequently: true });
 let session;
 let cameraStream;
 let running = false;
-let timer;
+let animationFrameId;
+let lastInferenceAt = 0;
+let isProcessing = false;
 let inferenceProvider = "wasm";
 
 confidenceInput.addEventListener("input", () => {
@@ -127,7 +147,8 @@ async function startCamera() {
         ? "Cámara activa. El análisis se ejecutará en el procesador de este dispositivo."
         : "Cámara activa. Mantén un objeto centrado en el encuadre.";
     resizeOverlay();
-    await processFrame();
+    lastInferenceAt = 0;
+    animationFrameId = requestAnimationFrame(processFrame);
   } catch (error) {
     stopCamera();
     statusMessage.textContent = getStartupErrorMessage(error);
@@ -151,7 +172,10 @@ function getStartupErrorMessage(error) {
 
 function stopCamera() {
   running = false;
-  clearTimeout(timer);
+  if (animationFrameId !== undefined) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = undefined;
+  }
   cameraStream?.getTracks().forEach((track) => track.stop());
   cameraStream = undefined;
   video.srcObject = null;
@@ -166,17 +190,33 @@ function stopCamera() {
   resultEmpty.hidden = false;
 }
 
-async function processFrame() {
-  if (!running || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    timer = setTimeout(processFrame, 250);
+function processFrame(timestamp) {
+  if (!running) {
     return;
   }
 
+  if (
+    !isProcessing &&
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    timestamp - lastInferenceAt >= INFERENCE_INTERVAL_MS
+  ) {
+    lastInferenceAt = timestamp;
+    isProcessing = true;
+    void inferFrame();
+  }
+
+  animationFrameId = requestAnimationFrame(processFrame);
+}
+
+async function inferFrame() {
   try {
     const { scale, padX, padY } = prepareInput();
     const input = new ort.Tensor("float32", inputPixels(), [1, 3, INPUT_SIZE, INPUT_SIZE]);
-    const output = (await session.run({ images: input })).output0;
-    const detections = decodeDetections(output.data, scale, padX, padY);
+    const output = await session.run({ images: input });
+    const detections = decodeDetections(output.output0, scale, padX, padY);
+    if (!running) {
+      return;
+    }
     drawDetections(detections);
     renderResults(detections);
     statusMessage.textContent =
@@ -187,10 +227,9 @@ async function processFrame() {
     statusMessage.textContent = error.message || "Ocurrió un error durante el análisis.";
     statusMessage.classList.add("error");
     stopCamera();
-    return;
+  } finally {
+    isProcessing = false;
   }
-
-  timer = setTimeout(processFrame, 900);
 }
 
 function prepareInput() {
@@ -222,28 +261,36 @@ function inputPixels() {
 }
 
 function decodeDetections(data, scale, padX, padY) {
-  const candidates = [];
-  const minimumConfidence = Number(confidenceInput.value) / 100;
+  const outputData = data.data;
+  const classCount = data.dims[1] - 4;
+  const detectionCount = data.dims[2];
+  if (classCount !== CLASS_NAMES.length) {
+    throw new Error("La salida del modelo no coincide con sus clases de residuos.");
+  }
 
-  for (let index = 0; index < DETECTION_COUNT; index += 1) {
+  const candidates = [];
+  const minimumConfidence = Math.min(Number(confidenceInput.value), 75) / 100;
+
+  for (let index = 0; index < detectionCount; index += 1) {
     let classId = 0;
     let score = 0;
-    for (let classIndex = 0; classIndex < CLASS_COUNT; classIndex += 1) {
-      const classScore = data[(classIndex + 4) * DETECTION_COUNT + index];
+    for (let classIndex = 0; classIndex < classCount; classIndex += 1) {
+      const classScore = outputData[(classIndex + 4) * detectionCount + index];
       if (classScore > score) {
         score = classScore;
         classId = classIndex;
       }
     }
-    const [name, object, category] = CLASSIFICATIONS[classId];
+    const name = CLASS_NAMES[classId];
+    const category = classifyCategory(name);
     if (score < Math.max(minimumConfidence, CLASS_THRESHOLDS[name] || 0)) {
       continue;
     }
 
-    const centerX = data[index];
-    const centerY = data[DETECTION_COUNT + index];
-    const width = data[2 * DETECTION_COUNT + index];
-    const height = data[3 * DETECTION_COUNT + index];
+    const centerX = outputData[index];
+    const centerY = outputData[detectionCount + index];
+    const width = outputData[2 * detectionCount + index];
+    const height = outputData[3 * detectionCount + index];
     const left = Math.max(0, centerX - width / 2);
     const top = Math.max(0, centerY - height / 2);
     const right = Math.min(INPUT_SIZE, centerX + width / 2);
@@ -256,42 +303,41 @@ function decodeDetections(data, scale, padX, padY) {
     if (area <= 0 || area / (video.videoWidth * video.videoHeight) > 0.75) {
       continue;
     }
+    const boxCenterX = (x1 + x2) / 2 / video.videoWidth;
+    const boxCenterY = (y1 + y2) / 2 / video.videoHeight;
+    const offsetX = (boxCenterX - 0.5) * 2;
+    const offsetY = (boxCenterY - 0.5) * 2;
     if (
-      name === "biological" &&
-      skinRatio(left, top, right, bottom) > 0.45
+      Math.abs(offsetX) > CENTER_REGION_LIMIT ||
+      Math.abs(offsetY) > CENTER_REGION_LIMIT
     ) {
       continue;
     }
 
-    candidates.push({ name, object, category, score, x1, y1, x2, y2 });
+    candidates.push({
+      category,
+      score,
+      centerDistance: Math.hypot(offsetX, offsetY),
+      x1,
+      y1,
+      x2,
+      y2,
+    });
   }
 
-  return nonMaximumSuppression(candidates).slice(0, 10);
+  return nonMaximumSuppression(candidates)
+    .sort(
+      (first, second) =>
+        first.centerDistance - second.centerDistance || second.score - first.score
+    )
+    .slice(0, 1);
 }
 
-function skinRatio(left, top, right, bottom) {
-  const x = Math.max(0, Math.floor(left));
-  const y = Math.max(0, Math.floor(top));
-  const width = Math.min(INPUT_SIZE - x, Math.ceil(right) - x);
-  const height = Math.min(INPUT_SIZE - y, Math.ceil(bottom) - y);
-  if (width <= 0 || height <= 0) {
-    return 0;
-  }
-
-  const { data } = inputContext.getImageData(x, y, width, height);
-  let skinPixels = 0;
-  const pixelCount = width * height;
-  for (let index = 0; index < data.length; index += 4) {
-    const red = data[index];
-    const green = data[index + 1];
-    const blue = data[index + 2];
-    const cr = 128 + 0.5 * red - 0.418688 * green - 0.081312 * blue;
-    const cb = 128 - 0.168736 * red - 0.331264 * green + 0.5 * blue;
-    if (cr >= 133 && cr <= 173 && cb >= 77 && cb <= 127) {
-      skinPixels += 1;
-    }
-  }
-  return skinPixels / pixelCount;
+function classifyCategory(className) {
+  const normalizedName = className.toLowerCase().replace(/[-_]+/g, " ");
+  return ORGANIC_CLASSES.has(normalizedName)
+    ? "Basura Orgánica"
+    : "Basura Inorgánica";
 }
 
 function nonMaximumSuppression(candidates) {
@@ -329,8 +375,8 @@ function drawDetections(detections) {
   overlayContext.font = `600 ${Math.max(14, overlay.width / 42)}px Inter, sans-serif`;
 
   for (const detection of detections) {
-    const color = detection.category === "Basura Orgánica" ? "#42c58a" : "#5796ff";
-    const label = `${detection.object} · ${Math.round(detection.score * 100)}%`;
+    const color = CATEGORY_COLORS[detection.category];
+    const label = `${detection.category} · ${Math.round(detection.score * 100)}%`;
     const labelHeight = Math.max(24, overlay.width / 25);
     const labelWidth = overlayContext.measureText(label).width + 16;
     const labelTop = Math.max(0, detection.y1 - labelHeight);
@@ -342,8 +388,9 @@ function drawDetections(detections) {
       detection.x2 - detection.x1,
       detection.y2 - detection.y1
     );
+    overlayContext.fillStyle = color;
     overlayContext.fillRect(detection.x1, labelTop, labelWidth, labelHeight);
-    overlayContext.fillStyle = "#102019";
+    overlayContext.fillStyle = "#ffffff";
     overlayContext.fillText(label, detection.x1 + 8, labelTop + labelHeight * 0.68);
   }
 }
@@ -352,23 +399,14 @@ function renderResults(detections) {
   resultList.replaceChildren(
     ...detections.map((detection) => {
       const item = document.createElement("li");
-      item.className = "result-item";
+      const organic = detection.category === "Basura Orgánica";
+      item.className = `result-item ${organic ? "organic-result" : "inorganic-result"}`;
       const dot = document.createElement("span");
-      dot.className =
-        detection.category === "Basura Orgánica"
-          ? "result-dot organic-dot"
-          : "result-dot inorganic-dot";
+      dot.className = `result-dot ${organic ? "organic-dot" : "inorganic-dot"}`;
       const text = document.createElement("span");
-      text.className = "result-label";
-      const object = document.createElement("strong");
-      object.textContent = detection.object;
-      const category = document.createElement("small");
-      category.textContent = detection.category;
-      text.append(object, category);
-      const score = document.createElement("span");
-      score.className = "result-score";
-      score.textContent = `${Math.round(detection.score * 100)}%`;
-      item.append(dot, text, score);
+      text.className = "result-category";
+      text.textContent = `${detection.category} · ${Math.round(detection.score * 100)}%`;
+      item.append(dot, text);
       return item;
     })
   );

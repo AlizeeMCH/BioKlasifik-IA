@@ -9,10 +9,12 @@ Inorgánica**. No requiere entrenar un modelo.
 El proyecto también incluye una versión web que usa la cámara del navegador y
 ejecuta el modelo localmente con WebGPU cuando está disponible y usa WebAssembly
 en el procesador como alternativa. Así también puede funcionar en Safari para
-iPhone y en teléfonos Android sin aceleración gráfica compatible. Las imágenes
-no se envían a un servidor. La primera vez se descargan aproximadamente 50 MB
-de modelo; permite el acceso a la cámara. En Vercel, el nombre del proyecto
-debe escribirse en minúsculas: `bioklasifik-ia`.
+iPhone y en teléfonos Android sin aceleración gráfica compatible. El modelo
+web usa entradas de 320 × 320 píxeles y prioriza un objeto centrado; las
+inferencias no se acumulan si el teléfono tarda más de 225 ms. Las imágenes no
+se envían a un servidor. La primera vez se descargan aproximadamente 50 MB de
+modelo; permite el acceso a la cámara. En Vercel, el nombre del proyecto debe
+escribirse en minúsculas: `bioklasifik-ia`.
 
 Para probar la web localmente:
 
@@ -29,7 +31,11 @@ npm run build
 
 El modelo web se convirtió desde
 [kendrickfff/waste-classification-yolov8-ken](https://huggingface.co/kendrickfff/waste-classification-yolov8-ken),
-publicado bajo CC BY 4.0. Se conserva la atribución al autor en la aplicación.
+publicado bajo CC BY 4.0. La clase `biological` se clasifica como **Basura
+Orgánica**; las clases restantes del modelo son **Basura Inorgánica**. El
+modelo no tiene clases separadas para cada fruta o vegetal, así que los
+resultados dependen de lo que el detector reconozca como material biológico.
+Se conserva la atribución al autor en la aplicación.
 
 ## Requisito importante: Python
 

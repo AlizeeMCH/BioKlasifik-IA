@@ -210,13 +210,8 @@ h2 {
   object-fit: cover;
 }
 
-.camera-stage video {
-  transform: scaleX(-1);
-}
-
 .camera-stage canvas {
   pointer-events: none;
-  transform: scaleX(-1);
 }
 
 .camera-placeholder {
@@ -360,7 +355,7 @@ h2 {
 
 .result-item {
   display: grid;
-  grid-template-columns: 9px 1fr auto;
+  grid-template-columns: 9px 1fr;
   gap: 10px;
   align-items: center;
   padding: 11px 0;
@@ -375,31 +370,24 @@ h2 {
 }
 
 .organic-dot {
-  background: #42b87d;
+  background: #10b981;
 }
 
 .inorganic-dot {
-  background: #5c91ec;
+  background: #3b82f6;
 }
 
-.result-label {
-  display: grid;
-  gap: 3px;
-}
-
-.result-label strong {
+.result-category {
   font-size: 12px;
-}
-
-.result-label small {
-  color: #879188;
-  font-size: 10px;
-}
-
-.result-score {
-  color: #67736a;
-  font-size: 10px;
   font-weight: 700;
+}
+
+.organic-result .result-category {
+  color: #10b981;
+}
+
+.inorganic-result .result-category {
+  color: #3b82f6;
 }
 
 .legend {
