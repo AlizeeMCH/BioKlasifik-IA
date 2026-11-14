@@ -1,12 +1,19 @@
+import time
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
+import waste_classifier
 from waste_classifier import (
+    ServicioCamara,
     SuavizadorTemporal,
+    analizar_apariencia_color,
     caja_ocupa_demasiada_area,
     clasificar_clase,
+    decidir_categoria,
+    limitar_caja_visible,
     porcentaje_piel_en_caja,
     redimensionar_frame,
     supera_umbral,
@@ -17,43 +24,54 @@ class ClasificacionTests(unittest.TestCase):
     def test_clasifica_residuos_organicos(self):
         self.assertEqual(
             clasificar_clase("biological"),
-            ("Basura Orgánica", "Orgánico"),
+            "Basura Orgánica",
         )
         self.assertEqual(
             clasificar_clase("food scraps"),
-            ("Basura Orgánica", "Orgánico"),
+            "Basura Orgánica",
         )
+        for clase in (
+            "banana",
+            "green chili",
+            "lemon",
+            "tomato",
+            "avocado",
+        ):
+            with self.subTest(clase=clase):
+                self.assertEqual(clasificar_clase(clase), "Basura Orgánica")
 
     def test_clasifica_residuos_inorganicos(self):
-        clases = {
-            "plastic": "Plástico",
-            "paper": "Papel",
-            "cardboard": "Cartón",
-            "metal": "Metal",
-            "glass": "Vidrio",
-            "brown-glass": "Vidrio marrón",
-            "green-glass": "Vidrio verde",
-            "white-glass": "Vidrio transparente",
-            "battery": "Batería",
-            "clothes": "Residuo Inorgánico",
-            "shoes": "Calzado",
-            "trash": "Residuo mixto",
-        }
-        for clase, material in clases.items():
+        clases = (
+            "plastic",
+            "paper",
+            "cardboard",
+            "metal",
+            "glass",
+            "brown-glass",
+            "green-glass",
+            "white-glass",
+            "battery",
+            "clothes",
+            "shoes",
+            "trash",
+            "bottle",
+            "paper towel",
+        )
+        for clase in clases:
             with self.subTest(clase=clase):
                 self.assertEqual(
                     clasificar_clase(clase),
-                    ("Basura Inorgánica", material),
+                    "Basura Inorgánica",
                 )
 
     def test_normaliza_etiquetas_y_clasifica_alias_organicos(self):
         self.assertEqual(
             clasificar_clase("BIological-waste"),
-            ("Basura Orgánica", "Orgánico"),
+            "Basura Orgánica",
         )
 
     def test_ignora_clases_no_mapeadas(self):
-        self.assertIsNone(clasificar_clase("cell phone"))
+        self.assertIsNone(clasificar_clase("unknown gadget"))
 
     def test_umbral_especifico_reduce_falsos_positivos_de_ropa(self):
         self.assertFalse(supera_umbral("clothes", 0.607, 0.35))
@@ -80,6 +98,65 @@ class ClasificacionTests(unittest.TestCase):
         self.assertFalse(caja_ocupa_demasiada_area((0, 0, 80, 80), (100, 100, 3)))
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         self.assertEqual(redimensionar_frame(frame, cv2).shape, (600, 800, 3))
+
+    def test_conserva_aspecto_y_limita_cajas_y_etiquetas(self):
+        frame = np.zeros((640, 480, 3), dtype=np.uint8)
+        redimensionado = redimensionar_frame(frame, cv2)
+        self.assertEqual(redimensionado.shape, (600, 800, 3))
+        self.assertEqual(limitar_caja_visible((-10, -20, 500, 700), 480, 640), (12, 38, 468, 628))
+        self.assertIsNone(limitar_caja_visible((0, 0, 10, 30), 480, 640))
+
+    def test_analiza_el_color_en_el_centro_y_ignora_reflejos(self):
+        frame = np.full((100, 100, 3), (30, 60, 90), dtype=np.uint8)
+        frame[20:80, 20:80] = (30, 80, 20)
+        frame[47:53, 47:53] = (255, 255, 255)
+        apariencia = analizar_apariencia_color(
+            frame,
+            (0, 0, 100, 100),
+            cv2,
+        )
+        decision = decidir_categoria(
+            "Basura Inorgánica",
+            0.9,
+            None,
+            0,
+            apariencia,
+        )
+        self.assertGreaterEqual(apariencia["evidencia_organica"], 0.3)
+        self.assertEqual(decision[0], "Basura Orgánica")
+
+    def test_material_blanco_y_plastico_rosa_se_forzan_a_inorganico(self):
+        blanco = np.full((80, 80, 3), 248, dtype=np.uint8)
+        rosa = np.full((80, 80, 3), (165, 150, 220), dtype=np.uint8)
+        for frame in (blanco, rosa):
+            apariencia = analizar_apariencia_color(frame, (0, 0, 80, 80), cv2)
+            decision = decidir_categoria(
+                "Basura Orgánica",
+                0.8,
+                None,
+                0,
+                apariencia,
+            )
+            self.assertTrue(apariencia["inorganico_fuerte"])
+            self.assertEqual(decision[0], "Basura Inorgánica")
+
+    def test_filtra_piel_sin_descartar_comida_con_evidencia_cromatica(self):
+        apariencia_piel = {
+            "evidencia_organica": 0.0,
+            "evidencia_inorganica": 0.0,
+            "inorganico_fuerte": False,
+            "piel": 0.7,
+        }
+        self.assertIsNone(
+            decidir_categoria(
+                "Basura Orgánica",
+                0.8,
+                None,
+                0,
+                apariencia_piel,
+                es_clase_biologica=True,
+            )
+        )
 
     def test_suaviza_caja_y_confianza_entre_fotogramas(self):
         suavizador = SuavizadorTemporal(historial=5)
@@ -113,6 +190,157 @@ class ClasificacionTests(unittest.TestCase):
         self.assertEqual(len(suavizador.update([])), 1)
         self.assertEqual(len(suavizador.update([])), 1)
         self.assertEqual(suavizador.update([]), [])
+
+    def test_exige_cuatro_de_seis_frames_para_cambiar_de_categoria(self):
+        suavizador = SuavizadorTemporal(historial=6)
+
+        def deteccion(categoria, confianza=0.55):
+            return {
+                "clase": categoria,
+                "categoria": categoria,
+                "objeto": "",
+                "caja": (10, 10, 110, 110),
+                "confianza": confianza,
+            }
+
+        self.assertEqual(
+            suavizador.update([deteccion("Basura Orgánica")])[0]["categoria"],
+            "Basura Orgánica",
+        )
+        for _ in range(3):
+            self.assertEqual(
+                suavizador.update([deteccion("Basura Inorgánica")])[0]["categoria"],
+                "Basura Orgánica",
+            )
+        self.assertEqual(
+            suavizador.update([deteccion("Basura Inorgánica")])[0]["categoria"],
+            "Basura Inorgánica",
+        )
+
+    def test_confianza_superior_a_60_por_ciento_permite_cambio_inmediato(self):
+        suavizador = SuavizadorTemporal()
+        caja = (10, 10, 110, 110)
+        suavizador.update(
+            [
+                {
+                    "clase": "Basura Orgánica",
+                    "categoria": "Basura Orgánica",
+                    "objeto": "",
+                    "caja": caja,
+                    "confianza": 0.55,
+                }
+            ]
+        )
+        resultado = suavizador.update(
+            [
+                {
+                    "clase": "Basura Inorgánica",
+                    "categoria": "Basura Inorgánica",
+                    "objeto": "",
+                    "caja": caja,
+                    "confianza": 0.61,
+                }
+            ]
+        )
+        self.assertEqual(resultado[0]["categoria"], "Basura Inorgánica")
+
+    def test_fotogramas_sin_deteccion_cuentan_dentro_de_la_ventana(self):
+        suavizador = SuavizadorTemporal(historial=6)
+        caja = (10, 10, 110, 110)
+
+        def deteccion(categoria):
+            return {
+                "clase": categoria,
+                "categoria": categoria,
+                "objeto": "",
+                "caja": caja,
+                "confianza": 0.55,
+            }
+
+        suavizador.update([deteccion("Basura Orgánica")])
+        suavizador.update([deteccion("Basura Inorgánica")])
+        suavizador.update([deteccion("Basura Inorgánica")])
+        suavizador.update([])
+        suavizador.update([])
+        resultado = suavizador.update([deteccion("Basura Inorgánica")])
+
+        self.assertEqual(resultado[0]["categoria"], "Basura Orgánica")
+
+    def test_captura_sigue_fluida_mientras_el_motor_infiere(self):
+        class CamaraFalsa:
+            def __init__(self):
+                self.lecturas = 0
+                self.liberada = False
+
+            def isOpened(self):
+                return True
+
+            def set(self, _propiedad, _valor):
+                return True
+
+            def get(self, propiedad):
+                if propiedad == cv2.CAP_PROP_FRAME_WIDTH:
+                    return 640
+                if propiedad == cv2.CAP_PROP_FRAME_HEIGHT:
+                    return 480
+                return 0
+
+            def read(self):
+                if self.liberada:
+                    return False, None
+                self.lecturas += 1
+                time.sleep(0.002)
+                return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+            def release(self):
+                self.liberada = True
+
+        camara = CamaraFalsa()
+
+        class MotorFalso:
+            def __init__(self, *argumentos):
+                self.cv2 = cv2
+                self.confianza = argumentos[2]
+
+            def detectar(self, _cuadro):
+                time.sleep(0.25)
+                return [
+                    {
+                        "clase": "banana",
+                        "categoria": "Basura Orgánica",
+                        "objeto": "",
+                        "caja": (20, 40, 300, 300),
+                        "confianza": 0.72,
+                    }
+                ]
+
+        servicio = ServicioCamara()
+        try:
+            with (
+                patch("cv2.VideoCapture", return_value=camara),
+                patch.object(waste_classifier, "MotorDeteccion", MotorFalso),
+            ):
+                servicio.start()
+                limite = time.monotonic() + 3
+                estado = servicio.obtener_estado()
+                while (
+                    estado["detection"] is None
+                    and time.monotonic() < limite
+                ):
+                    time.sleep(0.01)
+                    estado = servicio.obtener_estado()
+                cuadro, _ = servicio.obtener_snapshot()
+
+            self.assertEqual(estado["state"], "listo")
+            self.assertEqual(
+                estado["detection"]["category"],
+                "Basura Orgánica",
+            )
+            self.assertIsNotNone(cuadro)
+            self.assertGreater(camara.lecturas, 20)
+        finally:
+            servicio.stop()
+        self.assertTrue(camara.liberada)
 
 
 if __name__ == "__main__":

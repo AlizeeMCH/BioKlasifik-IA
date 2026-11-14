@@ -20,6 +20,7 @@ const CATEGORY_COLORS = {
 };
 
 const video = document.querySelector("#camera");
+const pythonStream = document.querySelector("#pythonStream");
 const overlay = document.querySelector("#overlay");
 const placeholder = document.querySelector("#cameraPlaceholder");
 const cameraButton = document.querySelector("#cameraButton");
@@ -44,12 +45,27 @@ let running = false;
 let animationFrameId;
 let lastInferenceAt = 0;
 let isProcessing = false;
+let pythonMode = false;
+let pythonRunning = false;
+let pythonStatusTimer;
+const pythonBackendReady = detectPythonBackend();
 
 confidenceInput.addEventListener("input", () => {
   confidenceValue.textContent = `${confidenceInput.value}%`;
+  if (pythonRunning) {
+    void setPythonConfidence();
+  }
 });
 
 cameraButton.addEventListener("click", async () => {
+  if (await pythonBackendReady) {
+    if (running) {
+      stopCamera();
+    } else {
+      await startPythonCamera();
+    }
+    return;
+  }
   if (running) {
     stopCamera();
     return;
@@ -132,6 +148,131 @@ async function startCamera() {
   }
 }
 
+async function detectPythonBackend() {
+  if (!["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+    return false;
+  }
+  try {
+    const response = await fetch("/api/status", { cache: "no-store" });
+    if (!response.ok) {
+      return false;
+    }
+    const status = await response.json();
+    pythonMode = status.python_backend === true;
+    if (pythonMode) {
+      statusMessage.textContent =
+        "Servidor Python detectado. La cámara y los modelos se ejecutan localmente.";
+    }
+    return pythonMode;
+  } catch {
+    return false;
+  }
+}
+
+async function startPythonCamera() {
+  cameraButton.disabled = true;
+  statusMessage.classList.remove("error");
+  try {
+    const response = await fetch("/api/start", { method: "POST" });
+    const status = await response.json();
+    if (!response.ok) {
+      throw new Error(status.error || status.message || "No se pudo iniciar Python.");
+    }
+
+    running = true;
+    pythonRunning = true;
+    video.hidden = true;
+    overlay.hidden = true;
+    pythonStream.hidden = false;
+    pythonStream.src = "/video_feed";
+    placeholder.hidden = true;
+    cameraButton.textContent = "Detener cámara";
+    cameraButton.classList.add("stop-button");
+    cameraButton.disabled = false;
+    liveIndicator.textContent = "INICIANDO PYTHON";
+    liveIndicator.classList.add("active");
+    pythonStatusTimer = window.setInterval(
+      () => void updatePythonStatus(),
+      500
+    );
+    await updatePythonStatus();
+  } catch (error) {
+    cameraButton.disabled = false;
+    statusMessage.textContent = error.message || "No se pudo iniciar Python.";
+    statusMessage.classList.add("error");
+  }
+}
+
+async function updatePythonStatus() {
+  if (!pythonRunning) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/status", { cache: "no-store" });
+    const status = await response.json();
+    if (!response.ok) {
+      throw new Error(status.error || "No se pudo consultar el motor Python.");
+    }
+    if (status.state === "error") {
+      statusMessage.textContent = status.message;
+      statusMessage.classList.add("error");
+      stopCamera();
+      return;
+    }
+    statusMessage.textContent = status.message;
+    statusMessage.classList.remove("error");
+    liveIndicator.textContent =
+      status.state === "listo" ? "EN VIVO · PYTHON" : "INICIANDO PYTHON";
+    renderResults(
+      status.detection
+        ? [
+            {
+              category: status.detection.category,
+              score: status.detection.confidence,
+            },
+          ]
+        : []
+    );
+  } catch (error) {
+    statusMessage.textContent =
+      error.message || "Se perdió la conexión con el servidor Python.";
+    statusMessage.classList.add("error");
+  }
+}
+
+async function setPythonConfidence() {
+  try {
+    const response = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confidence: Number(confidenceInput.value) / 100,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || "No se pudo actualizar la confianza.");
+    }
+  } catch (error) {
+    statusMessage.textContent =
+      error.message || "No se pudo actualizar la confianza en Python.";
+    statusMessage.classList.add("error");
+  }
+}
+
+async function stopPythonBackend() {
+  try {
+    const response = await fetch("/api/stop", { method: "POST" });
+    if (!response.ok) {
+      throw new Error("No se pudo detener la cámara Python.");
+    }
+  } catch (error) {
+    statusMessage.textContent =
+      error.message || "No se pudo detener la cámara Python.";
+    statusMessage.classList.add("error");
+  }
+}
+
 function getStartupErrorMessage(error) {
   if (error.name === "NotAllowedError" || error.name === "SecurityError") {
     return "No se autorizó el acceso a la cámara. Permite el acceso en los ajustes del navegador y vuelve a intentarlo.";
@@ -146,7 +287,13 @@ function getStartupErrorMessage(error) {
 }
 
 function stopCamera() {
+  const stopPython = pythonRunning;
   running = false;
+  pythonRunning = false;
+  if (pythonStatusTimer !== undefined) {
+    window.clearInterval(pythonStatusTimer);
+    pythonStatusTimer = undefined;
+  }
   detectionStabilizer.reset();
   if (animationFrameId !== undefined) {
     cancelAnimationFrame(animationFrameId);
@@ -155,6 +302,10 @@ function stopCamera() {
   cameraStream?.getTracks().forEach((track) => track.stop());
   cameraStream = undefined;
   video.srcObject = null;
+  video.hidden = false;
+  pythonStream.hidden = true;
+  pythonStream.removeAttribute("src");
+  overlay.hidden = false;
   cameraButton.textContent = "Activar cámara";
   cameraButton.classList.remove("stop-button");
   cameraButton.disabled = false;
@@ -167,6 +318,9 @@ function stopCamera() {
   }
   resultList.replaceChildren();
   resultEmpty.hidden = false;
+  if (stopPython) {
+    void stopPythonBackend();
+  }
 }
 
 function processFrame(timestamp) {
@@ -452,4 +606,10 @@ function resizeOverlay() {
 
 video.addEventListener("loadedmetadata", resizeOverlay);
 window.addEventListener("resize", resizeOverlay);
-window.addEventListener("beforeunload", stopCamera);
+window.addEventListener("beforeunload", () => {
+  if (pythonRunning) {
+    navigator.sendBeacon("/api/stop");
+    pythonRunning = false;
+  }
+  stopCamera();
+});

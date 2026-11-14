@@ -3,3 +3,4 @@ ultralytics>=8.3,<9
 Pillow>=10,<14
 numpy>=2,<3
 huggingface_hub>=0.23,<1
+Flask>=3,<4

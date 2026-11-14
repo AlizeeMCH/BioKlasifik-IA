@@ -9,16 +9,15 @@ El proyecto también incluye una versión web que usa la cámara del navegador y
 combina COCO-SSD para localizar el objeto y MobileNetV2 (alpha 1.0, ImageNet)
 para clasificar su recorte. TensorFlow.js usa WebGL cuando está disponible y
 CPU como alternativa. El análisis se limita al objeto más cercano al centro y
-se estabiliza con las últimas cuatro predicciones. Los pesos se descargan al
-navegador la primera vez; las imágenes de la cámara no se envían a un servidor.
-En Vercel, el nombre del proyecto debe escribirse en minúsculas:
-`bioklasifik-ia`.
+se estabiliza con las últimas seis predicciones. En Vercel, el sitio sigue
+usando únicamente esta inferencia de navegador; el servidor Python es opcional
+y no cambia el despliegue estático. En Vercel, el nombre del proyecto debe
+escribirse en minúsculas: `bioklasifik-ia`.
 
 Una detección orgánica semántica con evidencia combinada de al menos 15% tiene
 prioridad; si MobileNet no reconoce el objeto, un respaldo conservador analiza
-los colores naturales del recorte e ignora reflejos claros. La estabilización
-espera tres votos para mostrar o cambiar la categoría y se reinicia al cambiar
-de objeto o tras tres fotogramas sin detección.
+los colores naturales del recorte e ignora reflejos claros. El resultado web
+solo muestra **Basura Orgánica** o **Basura Inorgánica**.
 
 Para probar la web localmente:
 
@@ -39,45 +38,63 @@ entrenaron con COCO e ImageNet respectivamente. Ambos son clasificadores
 genéricos, no un modelo de reciclaje; la inferencia puede equivocarse y la
 regla de color solo se aplica cuando no hay evidencia semántica clara.
 
-## Requisito importante: Python
+## Modo local con Python y Flask
 
-Usa Python 3.14 de 64 bits. El entorno `.venv` de este proyecto usa Python
-3.14.10; se verificaron las importaciones de PyTorch, Torchvision, Ultralytics
-y OpenCV en ese entorno.
+En `localhost` la página detecta el servidor Flask y puede usar el motor Python
+en vez de TensorFlow.js. El backend une el modelo especializado de residuos con
+YOLO-COCO y el análisis del 60% central de cada caja; captura y detección
+funcionan en hilos separados. El resultado se estabiliza con histéresis de seis
+fotogramas (cuatro votos para cambiar, o confianza superior a 60%) y solo
+muestra las dos categorías generales.
 
-## Pandas offline
-
-Se instalaron Pandas 3.0.5, NumPy 2.5.3 y sus dependencias desde
-`PANDAS_OFFLINE` en `.venv`. Las ruedas de esa carpeta requieren Python 3.14
-de 64 bits. Para repetir la instalación sin conexión:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install --no-index --find-links=.\PANDAS_OFFLINE pandas==3.0.5
-```
-
-## Instalación y ejecución
-
-Abre PowerShell en esta carpeta y ejecuta:
+Requiere Python 3.14 de 64 bits y Node.js/npm para compilar la interfaz local.
+El entorno `.venv` del proyecto usa Python 3.14.10. Instala las dependencias y
+la interfaz una vez:
 
 ```powershell
 py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python waste_classifier.py
+npm install
 ```
 
-La primera ejecución descarga de Hugging Face los pesos
-`yolov8n-waste-12cls-best.pt` (aprox. 51 MB), que después permanecen en caché.
-Si no hay conexión, coloca ese mismo archivo junto a `waste_classifier.py`
-para usarlo como respaldo. El modelo expone 12 etiquetas: battery, biological,
-brown-glass, cardboard, clothes, green-glass, metal, paper, plastic, shoes,
-trash y white-glass. Fuente y licencia del modelo: [kendrickfff/waste-classification-yolov8-ken](https://huggingface.co/kendrickfff/waste-classification-yolov8-ken), CC BY 4.0.
+Elige el modo desde la terminal de VS Code:
+
+```powershell
+# Ventana clásica de OpenCV
+python waste_classifier.py
+
+# Sitio local servido por Flask y procesado por YOLO en Python
+python waste_classifier.py --web
+# Alternativa equivalente
+python app.py
+```
+
+La interfaz local se abre en `http://127.0.0.1:5000`. `app.py` compila
+`dist/` antes de servir los archivos y expone `/video_feed` (MJPEG) y
+`/api/status` (última categoría y porcentaje), además de rutas internas para
+iniciar/detener la cámara y actualizar la confianza. Para cambiar el puerto o
+los modelos:
+
+```powershell
+python waste_classifier.py --web --port 5050 --camera 1
+python waste_classifier.py --web --model .\modelo_residuos.pt --object-model .\yolo11n.pt
+```
+
+La primera ejecución puede descargar los pesos del detector de residuos desde
+Hugging Face y `yolo11n.pt` para COCO; ambos se reutilizan después. Si el primer
+modelo no puede descargarse, coloca `yolov8n-waste-12cls-best.pt` junto a
+`waste_classifier.py`. El modelo de residuos expone 12 clases; el frontend y el
+modo Python las reducen a las dos categorías solicitadas. Fuente y licencia:
+[kendrickfff/waste-classification-yolov8-ken](https://huggingface.co/kendrickfff/waste-classification-yolov8-ken),
+CC BY 4.0.
 
 La cámara solicita 640x480, activa autofocus cuando está disponible y aplica
 CLAHE a la luminancia más un desenfoque gaussiano ligero antes de inferir.
-YOLO procesa cada segundo fotograma y reutiliza las detecciones en el siguiente;
-las cajas y confianzas se promedian para reducir parpadeos.
+YOLO analiza los fotogramas en segundo plano mientras OpenCV mantiene fluida la
+captura y la visualización. La ventana y el stream web comparten exactamente
+el mismo motor y el mismo suavizador de detecciones.
 Para seleccionar otra cámara:
 
 ```powershell
@@ -99,14 +116,13 @@ que conozcas los valores adecuados. Si autofocus causa problemas, usa
 
 ## Alcance del modelo
 
-`biological` y sus variantes se muestran como **Orgánico**; plastic, paper,
-cardboard, metal, glass, battery, clothes, shoes y trash se muestran como
-**Basura Inorgánica**. Las variantes brown/green/white-glass conservan el tipo
-de vidrio en la etiqueta. El color verde indica orgánico y azul inorgánico; la
-confianza es la puntuación del detector, no una garantía de que el objeto sea
-basura. Se exige 0.65 de confianza para `clothes` (0.35 para las demás clases)
-para reducir falsos positivos provocados por mangas o ropa de quien sostiene
-el objeto.
+`biological` y las clases de alimentos/frutas/verduras se muestran como
+**Basura Orgánica**; plastic, paper, cardboard, metal, glass, battery, clothes,
+shoes, trash y objetos COCO inorgánicos se muestran como **Basura Inorgánica**.
+El color verde indica orgánico y azul inorgánico; la confianza es la puntuación
+del detector, no una garantía de que el objeto sea basura. Se exige 0.65 de
+confianza para `clothes` para reducir falsos positivos provocados por ropa o
+mangas de quien sostiene el objeto.
 
 Para usar otros pesos locales: `python waste_classifier.py --model
 .\modelo_residuos.pt`. El detector fue entrenado con un conjunto específico y
