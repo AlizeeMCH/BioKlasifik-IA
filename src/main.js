@@ -1,8 +1,13 @@
 import { createDetectionStabilizer } from "./detection-stabilizer.js";
 import {
+  getCoverTransform,
+  mapBoxToCanvas,
+  placeLabel,
+} from "./canvas-geometry.js";
+import {
+  analyzeObjectAppearance,
   classifyLabel,
   classifyWastePredictions,
-  estimateOrganicColorEvidence,
 } from "./vision-classifier.js";
 import "./style.css";
 
@@ -156,7 +161,10 @@ function stopCamera() {
   placeholder.hidden = false;
   liveIndicator.textContent = "INACTIVA";
   liveIndicator.classList.remove("active");
-  overlayContext.clearRect(0, 0, overlay.width, overlay.height);
+  const overlaySize = resizeOverlay();
+  if (overlaySize) {
+    overlayContext.clearRect(0, 0, overlaySize.width, overlaySize.height);
+  }
   resultList.replaceChildren();
   resultEmpty.hidden = false;
 }
@@ -187,19 +195,24 @@ async function inferFrame() {
       return;
     }
     const selectedObject = selectPrimaryObject(objects);
-    const roi = cropObject(selectedObject);
+    const { box, colorCrop } = cropObject(selectedObject);
     const mobilePredictions = await mobileNet.classify(roiCanvas, 5);
     if (!running) {
       return;
     }
     const confidenceThreshold = Number(confidenceInput.value) / 100;
-    const colorEvidence = estimateOrganicColorEvidence(
-      roiContext.getImageData(0, 0, roiCanvas.width, roiCanvas.height)
+    const appearance = analyzeObjectAppearance(
+      roiContext.getImageData(
+        colorCrop.x,
+        colorCrop.y,
+        colorCrop.width,
+        colorCrop.height
+      )
     );
     const classification = classifyWastePredictions(
       mobilePredictions,
       selectedObject,
-      colorEvidence,
+      appearance,
       confidenceThreshold
     );
     if (!running) {
@@ -210,12 +223,12 @@ async function inferFrame() {
         ? [
             {
               ...classification,
-              ...roi,
-              centerX: (roi.x1 + roi.x2) / 2 / video.videoWidth,
-              centerY: (roi.y1 + roi.y2) / 2 / video.videoHeight,
+              ...box,
+              centerX: (box.x1 + box.x2) / 2 / video.videoWidth,
+              centerY: (box.y1 + box.y2) / 2 / video.videoHeight,
               centerDistance: Math.hypot(
-                ((roi.x1 + roi.x2) / 2 / video.videoWidth - 0.5) * 2,
-                ((roi.y1 + roi.y2) / 2 / video.videoHeight - 0.5) * 2
+                ((box.x1 + box.x2) / 2 / video.videoWidth - 0.5) * 2,
+                ((box.y1 + box.y2) / 2 / video.videoHeight - 0.5) * 2
               ),
             },
           ]
@@ -279,12 +292,18 @@ function cropObject(detection) {
     boxHeight = side;
   }
 
+  const boxX1 = Math.max(0, x);
+  const boxY1 = Math.max(0, y);
+  const boxX2 = Math.min(width, x + boxWidth);
+  const boxY2 = Math.min(height, y + boxHeight);
+  boxWidth = Math.max(1, boxX2 - boxX1);
+  boxHeight = Math.max(1, boxY2 - boxY1);
   const paddingX = boxWidth * 0.08;
   const paddingY = boxHeight * 0.08;
-  const left = Math.max(0, x - paddingX);
-  const top = Math.max(0, y - paddingY);
-  const right = Math.min(width, x + boxWidth + paddingX);
-  const bottom = Math.min(height, y + boxHeight + paddingY);
+  const left = Math.max(0, boxX1 - paddingX);
+  const top = Math.max(0, boxY1 - paddingY);
+  const right = Math.min(width, boxX2 + paddingX);
+  const bottom = Math.min(height, boxY2 + paddingY);
   const cropWidth = Math.max(1, right - left);
   const cropHeight = Math.max(1, bottom - top);
   const scale = Math.min(1, MAX_ROI_SIZE / Math.max(cropWidth, cropHeight));
@@ -302,44 +321,96 @@ function cropObject(detection) {
     roiCanvas.height
   );
 
-  return { x1: left, y1: top, x2: right, y2: bottom };
+  const colorX = Math.max(
+    0,
+    Math.min(
+      roiCanvas.width - 1,
+      Math.round((boxX1 + boxWidth * 0.2 - left) * scale)
+    )
+  );
+  const colorY = Math.max(
+    0,
+    Math.min(
+      roiCanvas.height - 1,
+      Math.round((boxY1 + boxHeight * 0.2 - top) * scale)
+    )
+  );
+  return {
+    box: { x1: boxX1, y1: boxY1, x2: boxX2, y2: boxY2 },
+    colorCrop: {
+      x: colorX,
+      y: colorY,
+      width: Math.max(
+        1,
+        Math.min(
+          roiCanvas.width - colorX,
+          Math.round(boxWidth * 0.6 * scale)
+        )
+      ),
+      height: Math.max(
+        1,
+        Math.min(
+          roiCanvas.height - colorY,
+          Math.round(boxHeight * 0.6 * scale)
+        )
+      ),
+    },
+  };
 }
 
 function drawDetections(detections) {
-  overlay.width = video.videoWidth;
-  overlay.height = video.videoHeight;
-  overlayContext.clearRect(0, 0, overlay.width, overlay.height);
-  overlayContext.lineWidth = Math.max(2, overlay.width / 320);
-  overlayContext.font = `600 ${Math.max(14, overlay.width / 42)}px Inter, sans-serif`;
+  const overlaySize = resizeOverlay();
+  if (!overlaySize || !video.videoWidth || !video.videoHeight) {
+    return;
+  }
+  const { width, height } = overlaySize;
+  const transform = getCoverTransform(
+    video.videoWidth,
+    video.videoHeight,
+    width,
+    height
+  );
+  overlayContext.clearRect(0, 0, width, height);
+  overlayContext.lineWidth = Math.max(2, width / 320);
+  overlayContext.font = `600 ${Math.max(14, width / 42)}px Inter, sans-serif`;
 
   for (const detection of detections) {
+    const box = mapBoxToCanvas(detection, transform, width, height);
+    if (!box) {
+      continue;
+    }
     const color = CATEGORY_COLORS[detection.category];
     const label = `${detection.category} · ${Math.round(detection.score * 100)}%`;
-    const labelHeight = Math.max(24, overlay.width / 25);
-    const labelWidth = Math.min(
-      overlay.width,
-      overlayContext.measureText(label).width + 16
+    const labelHeight = Math.max(24, width / 25);
+    const labelPosition = placeLabel(
+      box,
+      overlayContext.measureText(label).width + 16,
+      labelHeight,
+      width,
+      height
     );
-    const labelX = Math.min(
-      Math.max(0, detection.x1),
-      overlay.width - labelWidth
-    );
-    const labelTop =
-      detection.y1 < 32
-        ? detection.y1 + overlayContext.lineWidth
-        : detection.y1 - labelHeight;
     overlayContext.strokeStyle = color;
     overlayContext.fillStyle = color;
     overlayContext.strokeRect(
-      detection.x1,
-      detection.y1,
-      detection.x2 - detection.x1,
-      detection.y2 - detection.y1
+      box.x1,
+      box.y1,
+      box.x2 - box.x1,
+      box.y2 - box.y1
     );
     overlayContext.fillStyle = color;
-    overlayContext.fillRect(labelX, labelTop, labelWidth, labelHeight);
+    overlayContext.fillRect(
+      labelPosition.x,
+      labelPosition.y,
+      labelPosition.width,
+      labelHeight
+    );
     overlayContext.fillStyle = "#ffffff";
-    overlayContext.fillText(label, labelX + 8, labelTop + labelHeight * 0.68);
+    overlayContext.fillText(
+      label,
+      labelPosition.x + 8,
+      labelPosition.y + labelHeight * 0.68,
+      Math.max(0, labelPosition.width - 16)
+    );
   }
 }
 
@@ -362,11 +433,23 @@ function renderResults(detections) {
 }
 
 function resizeOverlay() {
-  if (video.videoWidth && video.videoHeight) {
-    overlay.width = video.videoWidth;
-    overlay.height = video.videoHeight;
+  const width = overlay.clientWidth;
+  const height = overlay.clientHeight;
+  if (!width || !height) {
+    return undefined;
   }
+
+  const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  const backingWidth = Math.round(width * pixelRatio);
+  const backingHeight = Math.round(height * pixelRatio);
+  if (overlay.width !== backingWidth || overlay.height !== backingHeight) {
+    overlay.width = backingWidth;
+    overlay.height = backingHeight;
+  }
+  overlayContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  return { width, height };
 }
 
 video.addEventListener("loadedmetadata", resizeOverlay);
+window.addEventListener("resize", resizeOverlay);
 window.addEventListener("beforeunload", stopCamera);

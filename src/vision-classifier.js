@@ -125,7 +125,6 @@ const INORGANIC_KEYWORDS = [
 const CATEGORY_ORGANIC = "Basura Orgánica";
 const CATEGORY_INORGANIC = "Basura Inorgánica";
 const ORGANIC_EVIDENCE_THRESHOLD = 0.15;
-const COLOR_EVIDENCE_THRESHOLD = 0.3;
 
 function normalizeLabel(label) {
   const asciiLabel = label
@@ -159,7 +158,7 @@ function combineEvidence(mobileScore, cocoScore) {
 export function classifyWastePredictions(
   mobilePredictions,
   cocoPrediction,
-  colorEvidence,
+  appearance,
   minimumConfidence
 ) {
   const mobileEvidence = {
@@ -190,6 +189,12 @@ export function classifyWastePredictions(
   );
   const threshold = Math.min(0.75, Math.max(0.15, minimumConfidence));
 
+  if (appearance.isHardInorganic) {
+    return {
+      category: CATEGORY_INORGANIC,
+      score: Math.max(0.61, appearance.inorganicEvidence),
+    };
+  }
   if (
     organicEvidence >= ORGANIC_EVIDENCE_THRESHOLD &&
     (organicEvidence >= inorganicEvidence || inorganicEvidence < threshold)
@@ -201,9 +206,12 @@ export function classifyWastePredictions(
   }
   if (
     inorganicEvidence < threshold &&
-    colorEvidence >= COLOR_EVIDENCE_THRESHOLD
+    appearance.organicEvidence >= 0.3
   ) {
-    return { category: CATEGORY_ORGANIC, score: colorEvidence };
+    return {
+      category: CATEGORY_ORGANIC,
+      score: appearance.organicEvidence,
+    };
   }
   return undefined;
 }
@@ -231,7 +239,7 @@ function rgbToHsv(red, green, blue) {
   };
 }
 
-export function estimateOrganicColorEvidence(imageData) {
+export function analyzeObjectAppearance(imageData) {
   const { data, width, height } = imageData;
   const sampleWidth = Math.ceil(width / 2);
   const sampleHeight = Math.ceil(height / 2);
@@ -241,6 +249,8 @@ export function estimateOrganicColorEvidence(imageData) {
   let organicPixels = 0;
   let sampledPixels = 0;
   let darkBrownPixels = 0;
+  let neutralPixels = 0;
+  let pastelPinkPixels = 0;
 
   for (let y = 0; y < height; y += 2) {
     for (let x = 0; x < width; x += 2) {
@@ -253,10 +263,22 @@ export function estimateOrganicColorEvidence(imageData) {
       sampledLuminance[sampleIndex] =
         0.2126 * red + 0.7152 * green + 0.0722 * blue;
 
+      sampledPixels += 1;
+      if (value >= 0.62 && saturation <= 0.2) {
+        neutralPixels += 1;
+      }
+      if (
+        hue >= 320 &&
+        hue <= 355 &&
+        saturation >= 0.1 &&
+        saturation <= 0.65 &&
+        value >= 0.45
+      ) {
+        pastelPinkPixels += 1;
+      }
       if (value > 0.9 && saturation < 0.24) {
         continue;
       }
-      sampledPixels += 1;
       const greenProduce =
         hue >= 35 && hue <= 165 && saturation >= 0.18 && value > 0.1;
       const warmProduce =
@@ -279,8 +301,12 @@ export function estimateOrganicColorEvidence(imageData) {
     }
   }
 
-  if (eligiblePixels === 0 || sampledPixels === 0) {
-    return 0;
+  if (sampledPixels === 0) {
+    return {
+      organicEvidence: 0,
+      inorganicEvidence: 0,
+      isHardInorganic: false,
+    };
   }
 
   let textureEdges = 0;
@@ -309,7 +335,8 @@ export function estimateOrganicColorEvidence(imageData) {
     }
   }
 
-  const chromaticShare = organicPixels / eligiblePixels;
+  const chromaticShare =
+    eligiblePixels === 0 ? 0 : organicPixels / eligiblePixels;
   const objectCoverage = Math.min(1, organicPixels / sampledPixels / 0.3);
   const baseEvidence = 0.65 * Math.sqrt(chromaticShare * objectCoverage);
   const textureEvidence =
@@ -321,5 +348,19 @@ export function estimateOrganicColorEvidence(imageData) {
             0.3
         )
       : 0;
-  return Math.min(0.65, baseEvidence + textureEvidence);
+  const organicEvidence =
+    eligiblePixels === 0
+      ? 0
+      : Math.min(0.65, baseEvidence + textureEvidence);
+  const neutralShare = neutralPixels / sampledPixels;
+  const pinkShare = pastelPinkPixels / sampledPixels;
+  const isHardInorganic = neutralShare >= 0.62 || pinkShare >= 0.3;
+
+  return {
+    organicEvidence,
+    inorganicEvidence: isHardInorganic
+      ? Math.max(neutralShare, pinkShare)
+      : 0,
+    isHardInorganic,
+  };
 }

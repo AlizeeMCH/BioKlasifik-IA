@@ -1,6 +1,7 @@
-const HISTORY_SIZE = 4;
+const HISTORY_SIZE = 6;
 const CATEGORY_INITIAL_VOTES = 3;
-const CATEGORY_SWITCH_VOTES = 3;
+const CATEGORY_SWITCH_VOTES = 4;
+const HIGH_CONFIDENCE_SWITCH_THRESHOLD = 0.6;
 const MAX_MISSED_FRAMES = 3;
 const SAME_OBJECT_CENTER_DISTANCE = 0.18;
 
@@ -48,7 +49,8 @@ export function createDetectionStabilizer() {
       }
     } else if (
       detection.category !== activeCategory &&
-      countCategoryVotes(detection.category) >= CATEGORY_SWITCH_VOTES
+      (countCategoryVotes(detection.category) >= CATEGORY_SWITCH_VOTES ||
+        detection.score > HIGH_CONFIDENCE_SWITCH_THRESHOLD)
     ) {
       activeCategory = detection.category;
     }

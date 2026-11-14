@@ -49,13 +49,13 @@ test("waits for repeated evidence before showing an initial category", () => {
   );
 });
 
-test("switches after three of four frames support the other category", () => {
+test("switches only after four of six frames support the other category", () => {
   const stabilizer = createDetectionStabilizer();
   for (let frame = 0; frame < 3; frame += 1) {
     stabilizer.stabilize([detection("Basura Orgánica")]);
   }
 
-  for (let frame = 0; frame < 2; frame += 1) {
+  for (let frame = 0; frame < 3; frame += 1) {
     assert.equal(
       stabilizer.stabilize([detection("Basura Inorgánica")])[0].category,
       "Basura Orgánica"
@@ -66,6 +66,19 @@ test("switches after three of four frames support the other category", () => {
     stabilizer.stabilize([detection("Basura Inorgánica")])[0].category,
     "Basura Inorgánica"
   );
+});
+
+test("allows a confident opposite category to switch immediately", () => {
+  const stabilizer = createDetectionStabilizer();
+  for (let frame = 0; frame < 3; frame += 1) {
+    stabilizer.stabilize([detection("Basura Orgánica")]);
+  }
+
+  const result = stabilizer.stabilize([
+    detection("Basura Inorgánica", 0.61),
+  ]);
+
+  assert.equal(result[0].category, "Basura Inorgánica");
 });
 
 test("resets category history when the centered object changes", () => {
