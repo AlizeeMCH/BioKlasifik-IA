@@ -59,17 +59,30 @@ python -m pip install -r requirements.txt
 npm install
 ```
 
+La ejecución Python de cámara no necesita `app.py` ni los archivos web. Usa
+pesos `.pt` locales junto a `waste_classifier.py` y no descarga modelos:
+`yolov8n-waste-12cls-best.pt` y `yolo11n.pt` deben acompañar al programa.
+Prepara las dependencias para una computadora sin conexión mientras aún tienes
+internet:
+
+```powershell
+python -m pip download -r requirements.txt -d paquetes_offline
+```
+
+En la computadora sin internet, instala los paquetes desde esa carpeta:
+
+```powershell
+python -m pip install --no-index --find-links .\paquetes_offline -r requirements.txt
+```
+
 Elige el modo desde la terminal de VS Code:
 
 ```powershell
-# Interfaz web local (modo predeterminado)
+# Ventana clásica de OpenCV (no requiere archivos web)
 python waste_classifier.py
 
-# Ventana clásica de OpenCV
-python waste_classifier.py --desktop
-
-# Alternativa directa para iniciar Flask
-python app.py
+# Opcional: interfaz Flask (sí requiere app.py y dist/)
+python waste_classifier.py --web
 ```
 
 La interfaz local se abre en `http://127.0.0.1:5000`. `app.py` compila
@@ -83,11 +96,8 @@ python waste_classifier.py --web --port 5050 --camera 1
 python waste_classifier.py --web --model .\modelo_residuos.pt --object-model .\yolo11n.pt
 ```
 
-La primera ejecución puede descargar los pesos del detector de residuos desde
-Hugging Face y `yolo11n.pt` para COCO; ambos se reutilizan después. Si el primer
-modelo no puede descargarse, coloca `yolov8n-waste-12cls-best.pt` junto a
-`waste_classifier.py`. El modelo de residuos expone 12 clases; el frontend y el
-modo Python las reducen a las dos categorías solicitadas. Fuente y licencia:
+El modelo de residuos expone 12 clases; el frontend y el modo Python las
+reducen a las dos categorías solicitadas. Fuente y licencia:
 [kendrickfff/waste-classification-yolov8-ken](https://huggingface.co/kendrickfff/waste-classification-yolov8-ken),
 CC BY 4.0.
 

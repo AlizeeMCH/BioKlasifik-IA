@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 yolo*.pt
+paquetes_offline/
 node_modules/
 dist/
 .vercel/

@@ -11,7 +11,6 @@ from collections import deque
 from pathlib import Path
 
 
-ID_REPOSITORIO = "kendrickfff/waste-classification-yolov8-ken"
 ARCHIVO_MODELO = "yolov8n-waste-12cls-best.pt"
 MODELO_OBJETOS = "yolo11n.pt"
 INTERVALO_INFERENCIA = 0.2
@@ -359,40 +358,28 @@ def redimensionar_frame(frame, cv2):
     return lienzo
 
 
-def obtener_ruta_modelo():
-    """Descarga el detector especializado o usa el archivo local si no hay red."""
-    ruta_local = Path(__file__).resolve().with_name(ARCHIVO_MODELO)
-    try:
-        from huggingface_hub import hf_hub_download
-        from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
-        from requests.exceptions import RequestException
-    except ImportError as error:
-        if ruta_local.is_file():
-            print(f"Aviso: Hugging Face Hub no está disponible; usaré {ruta_local}.")
-            return str(ruta_local)
-        raise RuntimeError(
-            "Falta huggingface_hub. Instálalo con: "
-            "python -m pip install -r requirements.txt"
-        ) from error
+def resolver_ruta_modelo(nombre_modelo):
+    """Resuelve un peso local, priorizando la carpeta del programa."""
+    ruta = Path(nombre_modelo).expanduser()
+    carpeta_programa = Path(__file__).resolve().parent
+    candidatos = [ruta] if ruta.is_absolute() else [
+        carpeta_programa / ruta,
+        carpeta_programa / ruta.name,
+        Path.cwd() / ruta,
+    ]
+    for candidato in candidatos:
+        if candidato.is_file():
+            return str(candidato.resolve())
+    raise RuntimeError(
+        f"No se encontró el modelo local {nombre_modelo!s}. "
+        "Este programa no descarga pesos; coloca el archivo .pt junto "
+        "a waste_classifier.py o indica una ruta local válida."
+    )
 
-    try:
-        return hf_hub_download(
-            repo_id=ID_REPOSITORIO,
-            filename=ARCHIVO_MODELO,
-            repo_type="model",
-        )
-    except (HfHubHTTPError, LocalEntryNotFoundError, RequestException) as error:
-        if ruta_local.is_file():
-            print(
-                "Aviso: no se pudo descargar desde Hugging Face; "
-                f"usaré el modelo local {ruta_local}."
-            )
-            return str(ruta_local)
-        raise RuntimeError(
-            "No se pudo descargar el modelo especializado y no existe el respaldo "
-            f"local. Copia {ARCHIVO_MODELO} a la carpeta del proyecto y vuelve "
-            "a ejecutar."
-        ) from error
+
+def obtener_ruta_modelo():
+    """Obtiene el detector de residuos sin realizar conexiones de red."""
+    return resolver_ruta_modelo(ARCHIVO_MODELO)
 
 
 def interseccion_sobre_union(caja_a, caja_b):
@@ -655,8 +642,11 @@ class MotorDeteccion:
             clipLimit=2.0,
             tileGridSize=(8, 8),
         )
-        self.detector_residuos = YOLO(modelo or obtener_ruta_modelo())
-        self.detector_objetos = YOLO(modelo_objetos)
+        ruta_residuos = (
+            resolver_ruta_modelo(modelo) if modelo else obtener_ruta_modelo()
+        )
+        self.detector_residuos = YOLO(ruta_residuos)
+        self.detector_objetos = YOLO(resolver_ruta_modelo(modelo_objetos))
         self.suavizador = SuavizadorTemporal(historial=historial)
 
     @staticmethod
@@ -1166,7 +1156,7 @@ def analizar_camara(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clasifica residuos con la interfaz web local o una ventana OpenCV."
+        description="Clasifica residuos con YOLO local y una cámara web."
     )
     parser.add_argument(
         "--camera", type=int, default=0, help="Índice de cámara (predeterminado: 0)"
@@ -1175,8 +1165,8 @@ def main():
         "--model",
         default=None,
         help=(
-            "Pesos YOLO locales opcionales; por defecto descarga el modelo de "
-            "residuos de Hugging Face"
+            "Ruta local a los pesos YOLO de residuos; por defecto usa "
+            f"{ARCHIVO_MODELO} junto a este archivo"
         ),
     )
     parser.add_argument(
@@ -1187,12 +1177,12 @@ def main():
     parser.add_argument(
         "--web",
         action="store_true",
-        help="Inicia Flask y abre la interfaz web (modo predeterminado).",
+        help="Inicia la interfaz Flask local (requiere app.py y dist/).",
     )
     parser.add_argument(
         "--desktop",
         action="store_true",
-        help="Usa la ventana clásica de OpenCV en lugar de la interfaz web.",
+        help="Usa la ventana clásica de OpenCV (modo predeterminado).",
     )
     parser.add_argument(
         "--host",
@@ -1264,7 +1254,7 @@ def main():
         parser.error("--port debe estar entre 1 y 65535.")
 
     try:
-        if not argumentos.desktop:
+        if argumentos.web:
             from app import ejecutar_servidor
 
             ejecutar_servidor(

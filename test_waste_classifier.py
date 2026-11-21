@@ -1,5 +1,7 @@
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cv2
@@ -21,6 +23,62 @@ from waste_classifier import (
 
 
 class ClasificacionTests(unittest.TestCase):
+    def test_busca_pesos_en_la_carpeta_del_script_y_no_en_la_red(self):
+        with tempfile.TemporaryDirectory() as temporal:
+            carpeta = Path(temporal)
+            peso = carpeta / waste_classifier.ARCHIVO_MODELO
+            peso.touch()
+
+            with patch.object(waste_classifier, "__file__", str(carpeta / "waste_classifier.py")):
+                ruta = waste_classifier.obtener_ruta_modelo()
+
+        self.assertEqual(ruta, str(peso.resolve()))
+
+    def test_resuelve_el_modelo_secundario_junto_al_script(self):
+        with tempfile.TemporaryDirectory() as temporal:
+            carpeta = Path(temporal)
+            peso = carpeta / "yolo11n.pt"
+            peso.touch()
+
+            with patch.object(
+                waste_classifier,
+                "__file__",
+                str(carpeta / "waste_classifier.py"),
+            ):
+                ruta = waste_classifier.resolver_ruta_modelo("yolo11n.pt")
+
+        self.assertEqual(ruta, str(peso.resolve()))
+
+    def test_falla_con_mensaje_claro_si_falta_un_peso_local(self):
+        with tempfile.TemporaryDirectory() as temporal:
+            with patch.object(
+                waste_classifier,
+                "__file__",
+                str(Path(temporal) / "waste_classifier.py"),
+            ), patch.object(Path, "cwd", return_value=Path(temporal)):
+                with self.assertRaisesRegex(RuntimeError, "no descarga"):
+                    waste_classifier.obtener_ruta_modelo()
+
+    def test_cli_predeterminado_no_importa_la_aplicacion_web(self):
+        import builtins
+        import sys
+
+        importar_original = builtins.__import__
+
+        def importar_sin_app(nombre, *argumentos, **opciones):
+            if nombre == "app":
+                raise AssertionError("El modo Python no debe importar app.py")
+            return importar_original(nombre, *argumentos, **opciones)
+
+        with (
+            patch.object(sys, "argv", ["waste_classifier.py"]),
+            patch.object(waste_classifier, "analizar_camara") as analizar,
+            patch("builtins.__import__", side_effect=importar_sin_app),
+        ):
+            self.assertEqual(waste_classifier.main(), 0)
+
+        analizar.assert_called_once()
+
     def test_clasifica_residuos_organicos(self):
         self.assertEqual(
             clasificar_clase("biological"),
