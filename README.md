@@ -62,12 +62,13 @@ npm install
 Elige el modo desde la terminal de VS Code:
 
 ```powershell
-# Ventana clásica de OpenCV
+# Interfaz web local (modo predeterminado)
 python waste_classifier.py
 
-# Sitio local servido por Flask y procesado por YOLO en Python
-python waste_classifier.py --web
-# Alternativa equivalente
+# Ventana clásica de OpenCV
+python waste_classifier.py --desktop
+
+# Alternativa directa para iniciar Flask
 python app.py
 ```
 

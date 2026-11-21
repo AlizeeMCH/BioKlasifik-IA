@@ -125,7 +125,12 @@ def crear_app(servicio=None):
 
 
 def construir_frontend():
-    """Genera los archivos estáticos que Flask servirá, sin tocar Vercel."""
+    """Genera los estáticos solo si la entrega no incluye un build listo."""
+    index = DIST / "index.html"
+    assets = DIST / "assets"
+    if index.is_file() and assets.is_dir() and any(assets.iterdir()):
+        return
+
     ejecutable_npm = shutil.which("npm.cmd") if sys.platform == "win32" else None
     ejecutable_npm = ejecutable_npm or shutil.which("npm")
     if not ejecutable_npm:

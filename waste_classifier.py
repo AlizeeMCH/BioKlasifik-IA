@@ -1166,7 +1166,7 @@ def analizar_camara(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clasifica residuos en una ventana OpenCV o una interfaz web."
+        description="Clasifica residuos con la interfaz web local o una ventana OpenCV."
     )
     parser.add_argument(
         "--camera", type=int, default=0, help="Índice de cámara (predeterminado: 0)"
@@ -1187,7 +1187,12 @@ def main():
     parser.add_argument(
         "--web",
         action="store_true",
-        help="Inicia Flask y abre la interfaz web con inferencia Python.",
+        help="Inicia Flask y abre la interfaz web (modo predeterminado).",
+    )
+    parser.add_argument(
+        "--desktop",
+        action="store_true",
+        help="Usa la ventana clásica de OpenCV en lugar de la interfaz web.",
     )
     parser.add_argument(
         "--host",
@@ -1259,7 +1264,7 @@ def main():
         parser.error("--port debe estar entre 1 y 65535.")
 
     try:
-        if argumentos.web:
+        if not argumentos.desktop:
             from app import ejecutar_servidor
 
             ejecutar_servidor(
